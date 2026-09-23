@@ -53,37 +53,14 @@ body{min-height:100vh;min-height:100dvh;overflow:hidden}
 .main-area{display:flex;flex-direction:column;min-height:0}
 .doc-toolbar{flex:none}
 .editor-scroll{flex:1;min-height:0}
-
-body{min-width:320px}
-.mobile-menu-button,.mobile-profile{display:none}
-.sidebar-backdrop{display:none}
-
-@media(max-width:700px){
-  .topbar{height:58px;padding:0 12px;gap:10px}
-  .brand{gap:0}
-  .brand>span:last-child,.breadcrumb{display:none}
-  .top-actions{gap:7px}
-  .save-status,.icon-btn{display:none}
-  .share-btn{width:34px;height:34px;justify-content:center;padding:0}
-  .share-btn span{display:none}
-  .desktop-profile{display:none}
-  .mobile-profile{display:grid;width:30px;height:30px}
-  .mobile-menu-button{width:34px;height:34px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:#727182;cursor:pointer}
-  .mobile-menu-button:hover,.mobile-menu-button:focus-visible{background:#f2f0ff;color:#5d50c4}
-  .workspace{height:calc(100vh - 58px);height:calc(100dvh - 58px)}
-  .sidebar{position:fixed;inset-block:0;inset-inline-start:0;z-index:31;width:min(300px,86vw);height:100vh;height:100dvh;padding-top:20px;box-shadow:0 8px 32px #1c1a2d26;transform:translateX(-105%);visibility:hidden;transition:transform .22s ease,visibility .22s}
-  [dir="rtl"] .sidebar{transform:translateX(105%)}
-  .sidebar.sidebar-open{transform:translateX(0);visibility:visible;transition:transform .22s ease,visibility 0s}
-  .sidebar-backdrop{position:fixed;inset:0;z-index:30;display:block;border:0;background:#17152266}
-  .team-user .profile{display:none}
-  .doc-toolbar{height:52px;padding-inline:16px}
-  .editor-scroll{padding:18px 12px 30px}
-  .paper{min-height:calc(100dvh - 150px);padding:24px 22px}
-  .paper-footer{inset-inline:22px;bottom:14px}
-  .doc-heading{font-size:25px}
-}
-
-@media(max-width:390px){
-  .language-picker select{min-width:66px;width:66px;padding-inline:8px 22px}
-  .top-actions{gap:4px}
-}
+.document-search{height:34px;display:flex;align-items:center;gap:7px;margin:0 8px 8px;padding:0 9px;border:1px solid #ecebf1;border-radius:7px;background:#fff;color:#aaa9b4}
+.document-search:focus-within{border-color:#bcb5ec;box-shadow:0 0 0 2px #7567dc12}
+.document-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:#565563;font:400 11px 'Heebo',sans-serif}
+.document-search input::placeholder{color:#aaa9b4}
+.document-search-empty{padding:12px 9px;color:#aaa9b4;font-size:10px;text-align:center}
+.document-drag-handle{width:23px;height:29px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:5px;background:transparent;color:#aaa8b4;cursor:grab;touch-action:none}
+.document-drag-handle:hover,.document-drag-handle:focus-visible{background:#f0eefb;color:#6655dc}
+.document-drag-handle:focus-visible{outline:2px solid #8e82e8;outline-offset:1px}
+.document-drag-handle:active{cursor:grabbing}
+.dragged-document-row{opacity:.45}
+.drop-target-document-row{box-shadow:inset 0 2px #7464e3}

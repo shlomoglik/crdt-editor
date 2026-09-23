@@ -2,7 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, MoreVertical, MousePointer2, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
 import { createDocumentId, isDocumentId, readDocuments, writeDocuments, type DocumentRecord } from './documentStore'
 import './style.css'
@@ -35,6 +35,9 @@ function Workspace() {
   const { language, direction, t, setLanguage } = useLanguage()
   const [documents, setDocuments] = React.useState<DocumentRecord[]>(readDocuments)
   const documentIndexRef = React.useRef(documents)
+  const [documentSearch, setDocumentSearch] = React.useState('')
+  const [draggedDocumentId, setDraggedDocumentId] = React.useState<string | null>(null)
+  const [dropTargetDocumentId, setDropTargetDocumentId] = React.useState<string | null>(null)
   const [docId, setDocId] = React.useState(() => {
     const requestedId = new URLSearchParams(location.search).get('doc')
     return isDocumentId(requestedId) ? requestedId : documents[0]?.id ?? createDocumentId()
@@ -53,26 +56,18 @@ function Workspace() {
   const [title, setTitle] = React.useState(t.untitled)
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
-  const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false)
   const [drawingColor, setDrawingColor] = React.useState(palette[0])
   const drawing = React.useRef<{ color: string; points: { x: number; y: number }[] } | null>(null)
   const guestName = `${t.guestName} ${identity.suffix}`
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
 
-  React.useEffect(() => {
-    if (!mobileSidebarOpen) return
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileSidebarOpen(false)
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [mobileSidebarOpen])
 
   const saveDocumentRecord = React.useCallback((id: string, nextTitle: string) => {
     const current = documentIndexRef.current
     const existing = current.find(document => document.id === id)
-    const record: DocumentRecord = { id, title: nextTitle, updatedAt: Date.now() }
+    const order = existing?.order ?? Math.min(0, ...current.map(document => document.order)) - 1
+    const record: DocumentRecord = { id, title: nextTitle, updatedAt: Date.now(), order }
     const next = existing
       ? current.map(document => document.id === id ? record : document)
       : [record, ...current]
@@ -103,7 +98,7 @@ function Workspace() {
   const deleteDocument = (id: string) => {
     const remaining = documentIndexRef.current.filter(document => document.id !== id)
     if (id === docId && remaining.length === 0) {
-      remaining.push({ id: createDocumentId(), title: t.untitled, updatedAt: Date.now() })
+      remaining.push({ id: createDocumentId(), title: t.untitled, updatedAt: Date.now(), order: 0 })
     }
     documentIndexRef.current = remaining
     writeDocuments(remaining)
@@ -114,6 +109,46 @@ function Workspace() {
       setDocId(nextDocument.id)
     }
   }
+
+  const moveDocument = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return
+    const current = documentIndexRef.current
+    const sourceIndex = current.findIndex(document => document.id === sourceId)
+    const targetIndex = current.findIndex(document => document.id === targetId)
+    if (sourceIndex < 0 || targetIndex < 0) return
+    const reordered = [...current]
+    const [source] = reordered.splice(sourceIndex, 1)
+    reordered.splice(targetIndex, 0, source)
+    const next = reordered.map((document, order) => ({ ...document, order }))
+    documentIndexRef.current = next
+    writeDocuments(next)
+    setDocuments(next)
+  }
+
+  const moveDocumentBy = (id: string, offset: number) => {
+    const current = documentIndexRef.current
+    const index = current.findIndex(document => document.id === id)
+    const target = current[index + offset]
+    if (target) moveDocument(id, target.id)
+  }
+
+  const startDocumentDrag = (event: React.DragEvent<HTMLButtonElement>, id: string) => {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', id)
+    setDraggedDocumentId(id)
+  }
+
+  const dropDocument = (event: React.DragEvent<HTMLDivElement>, targetId: string) => {
+    event.preventDefault()
+    const sourceId = event.dataTransfer.getData('text/plain') || draggedDocumentId
+    if (sourceId) moveDocument(sourceId, targetId)
+    setDraggedDocumentId(null)
+    setDropTargetDocumentId(null)
+  }
+
+  const visibleDocuments = documents
+    .filter(document => document.title.toLocaleLowerCase(language).includes(documentSearch.trim().toLocaleLowerCase(language)))
+    .sort((a, b) => a.order - b.order)
 
   React.useEffect(() => {
     updateDocumentUrl(docId, true)
@@ -299,16 +334,42 @@ function Workspace() {
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
         <button className="icon-btn" onClick={exportFile} title={t.download}><ArrowDownToLine size={17} /></button>
         <button className="share-btn" onClick={share}>{copied ? <Check size={16} /> : <Share2 size={16} />}<span>{copied ? t.copied : t.share}</span></button>
-        <button className="mobile-menu-button" onClick={() => setMobileSidebarOpen(true)} aria-label={t.workspace} aria-expanded={mobileSidebarOpen}><MoreVertical size={20} /></button>
-        <div className="profile desktop-profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
-        <div className="profile mobile-profile" title={guestName} aria-hidden="true" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
+        <div className="profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
       </div>
     </header>
     <section className="workspace">
-      {mobileSidebarOpen && <button className="sidebar-backdrop" aria-label={t.workspace} onClick={() => setMobileSidebarOpen(false)} />}
-      <aside className={`sidebar ${mobileSidebarOpen ? 'sidebar-open' : ''}`}>
+      <aside className="sidebar">
         <div className="side-section"><div className="side-label">{t.workspace}</div><button className="side-link active"><FileText size={17} /> {t.documents}</button><button className="side-link"><Users size={17} /> {t.sharedWithMe}</button></div>
-        <div className="side-section"><div className="side-label">{t.recentDocuments}</div><div className="documents-list">{[...documents].sort((a, b) => b.updatedAt - a.updatedAt).map(document => <div key={document.id} className={`document-row ${document.id === docId ? 'active-document-row' : ''}`}><button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button><button className="remove-document" onClick={() => deleteDocument(document.id)} title={t.removeDocument} aria-label={`${t.removeDocument}: ${document.title}`}><Trash2 size={14} /></button></div>)}</div><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.newDocument}</button></div>
+        <div className="side-section">
+          <div className="side-label">{t.recentDocuments}</div>
+          <label className="document-search"><Search size={15} /><input type="search" value={documentSearch} onChange={event => setDocumentSearch(event.target.value)} placeholder={t.searchDocumentsPlaceholder} aria-label={t.searchDocuments} /></label>
+          <div className="documents-list">
+            {visibleDocuments.map(document => <div
+              key={document.id}
+              className={`document-row ${document.id === docId ? 'active-document-row' : ''} ${draggedDocumentId === document.id ? 'dragged-document-row' : ''} ${dropTargetDocumentId === document.id ? 'drop-target-document-row' : ''}`}
+              onDragOver={event => { event.preventDefault(); setDropTargetDocumentId(document.id) }}
+              onDrop={event => dropDocument(event, document.id)}
+            >
+              <button
+                className="document-drag-handle"
+                draggable
+                onDragStart={event => startDocumentDrag(event, document.id)}
+                onDragEnd={() => { setDraggedDocumentId(null); setDropTargetDocumentId(null) }}
+                onKeyDown={event => {
+                  if (event.key === 'ArrowUp') { event.preventDefault(); moveDocumentBy(document.id, -1) }
+                  if (event.key === 'ArrowDown') { event.preventDefault(); moveDocumentBy(document.id, 1) }
+                }}
+                aria-label={`${t.reorderDocument}: ${document.title}`}
+                aria-keyshortcuts="ArrowUp ArrowDown"
+                title={`${t.moveDocumentUp} / ${t.moveDocumentDown}`}
+              ><GripVertical size={15} /></button>
+              <button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button>
+              <button className="remove-document" onClick={() => deleteDocument(document.id)} title={t.removeDocument} aria-label={`${t.removeDocument}: ${document.title}`}><Trash2 size={14} /></button>
+            </div>)}
+            {visibleDocuments.length === 0 && <div className="document-search-empty">{t.noMatchingDocuments}</div>}
+          </div>
+          <button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.newDocument}</button>
+        </div>
         <div className="sidebar-bottom"><div className="help-card"><CircleHelp size={17} /><span>{t.help}<small>{t.guide}</small></span></div><div className="team-user"><div className="profile small" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div><span><strong>{guestName}</strong><small>{t.freePlan}</small></span><span className="more">···</span></div></div>
       </aside>
       <section className="main-area">

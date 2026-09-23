@@ -2,6 +2,7 @@ export type DocumentRecord = {
   id: string
   title: string
   updatedAt: number
+  order: number
 }
 
 const storageKey = 'merhav-documents'
@@ -19,10 +20,18 @@ export function readDocuments(): DocumentRecord[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]')
     if (!Array.isArray(value)) return []
-    return value.filter((entry): entry is DocumentRecord =>
+    const documents = value.filter((entry): entry is Omit<DocumentRecord, 'order'> & { order?: number } =>
       typeof entry?.id === 'string' && isDocumentId(entry.id) &&
       typeof entry.title === 'string' && typeof entry.updatedAt === 'number'
     )
+    if (documents.every(document => typeof document.order === 'number' && Number.isFinite(document.order))) {
+      return (documents as DocumentRecord[]).sort((a, b) => a.order - b.order)
+    }
+    const migrated = documents
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((document, order) => ({ ...document, order }))
+    writeDocuments(migrated)
+    return migrated
   } catch {
     return []
   }
