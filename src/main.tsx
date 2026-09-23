@@ -2,12 +2,17 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, MousePointer2, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, Menu, MousePointer2, MoreVertical, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
 import { createDocumentId, isDocumentId, readDocuments, writeDocuments, type DocumentRecord } from './documentStore'
 import './style.css'
 
-type Person = { name: string; color: string; cursor?: { anchor: number; head: number } }
+const RichTextEditor = React.lazy(async () => {
+  const module = await import('./RichTextEditor')
+  return { default: module.RichTextEditor }
+})
+
+type Person = { name: string; color: string }
 type Stroke = { color: string; points: { x: number; y: number }[] }
 const palette = ['#6757e8', '#12a889', '#eb8453', '#df5b8c', '#4387dc', '#cf9e2e']
 const identity = (() => {
@@ -34,14 +39,12 @@ function Workspace() {
     const requestedId = new URLSearchParams(location.search).get('doc')
     return isDocumentId(requestedId) ? requestedId : documents[0]?.id ?? createDocumentId()
   })
-  const docRef = React.useRef<Y.Doc | null>(null)
   const providerRef = React.useRef<WebsocketProvider | null>(null)
-  const textRef = React.useRef<Y.Text | null>(null)
   const strokesRef = React.useRef<Y.Array<Stroke> | null>(null)
   const metadataRef = React.useRef<Y.Map<string> | null>(null)
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
-  const [value, setValue] = React.useState('')
+  const [editorSession, setEditorSession] = React.useState<{ id: string; document: Y.Doc; provider: WebsocketProvider } | null>(null)
+  const [bodyText, setBodyText] = React.useState('')
   const [strokes, setStrokes] = React.useState<Stroke[]>([])
   const [people, setPeople] = React.useState<Person[]>([])
   const [connected, setConnected] = React.useState(false)
@@ -50,11 +53,21 @@ function Workspace() {
   const [title, setTitle] = React.useState(t.untitled)
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false)
   const [drawingColor, setDrawingColor] = React.useState(palette[0])
   const drawing = React.useRef<{ color: string; points: { x: number; y: number }[] } | null>(null)
   const guestName = `${t.guestName} ${identity.suffix}`
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
+
+  React.useEffect(() => {
+    if (!mobileSidebarOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileSidebarOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mobileSidebarOpen])
 
   const saveDocumentRecord = React.useCallback((id: string, nextTitle: string) => {
     const current = documentIndexRef.current
@@ -129,7 +142,8 @@ function Workspace() {
   }, [])
 
   React.useEffect(() => {
-    setValue('')
+    setEditorSession(null)
+    setBodyText('')
     setStrokes([])
     setPeople([])
     setConnected(false)
@@ -137,25 +151,21 @@ function Workspace() {
     setTitle(languageLabels.current.untitled)
     const doc = new Y.Doc()
     const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/yjs`, docId, doc, { connect: true })
-    docRef.current = doc
     providerRef.current = provider
-    const text = doc.getText('content')
+    setEditorSession({ id: docId, document: doc, provider })
     const board = doc.getArray<Stroke>('board')
     const metadata = doc.getMap<string>('metadata')
-    textRef.current = text
     strokesRef.current = board
     metadataRef.current = metadata
+    const richContent = doc.getXmlFragment('richContent')
     if (!metadata.has('title')) metadata.set('title', languageLabels.current.untitled)
     provider.awareness.setLocalStateField('user', { name: guestName, color: identity.color } satisfies Person)
 
-    const onText = () => {
-      setValue(text.toString())
-      saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
-    }
     const onBoard = () => {
       setStrokes(board.toArray())
       saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
     }
+    const onRichContent = () => saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
     const onMetadata = () => {
       const nextTitle = metadata.get('title') ?? languageLabels.current.untitled
       setTitle(nextTitle)
@@ -163,26 +173,40 @@ function Workspace() {
     }
     const onAwareness = () => setPeople(Array.from(provider.awareness.getStates().values()).map(state => state.user as Person | undefined).filter((user): user is Person => !!user))
     const onStatus = ({ status }: { status: string }) => setConnected(status === 'connected')
-    const onSync = (isSynced: boolean) => setSynced(isSynced)
+    let migrationTimer: number | undefined
+    const onSync = (isSynced: boolean) => {
+      if (!isSynced) {
+        setSynced(false)
+        return
+      }
+      window.clearTimeout(migrationTimer)
+      migrationTimer = window.setTimeout(() => {
+        const clients = [...provider.awareness.getStates().keys()].sort((a, b) => a - b)
+        if (clients[0] === provider.awareness.clientID) migrateLegacyContent(doc)
+        setSynced(true)
+      }, 150)
+    }
 
-    text.observe(onText)
     board.observe(onBoard)
+    richContent.observe(onRichContent)
     metadata.observe(onMetadata)
     provider.awareness.on('change', onAwareness)
     provider.on('status', onStatus)
     provider.on('sync', onSync)
-    onText()
     onBoard()
+    onRichContent()
     onMetadata()
     onAwareness()
 
     return () => {
-      text.unobserve(onText)
       board.unobserve(onBoard)
+      richContent.unobserve(onRichContent)
       metadata.unobserve(onMetadata)
       provider.awareness.off('change', onAwareness)
       provider.off('status', onStatus)
       provider.off('sync', onSync)
+      window.clearTimeout(migrationTimer)
+      setEditorSession(current => current?.id === docId ? null : current)
       provider.destroy()
       doc.destroy()
     }
@@ -223,31 +247,6 @@ function Workspace() {
     return () => observer.disconnect()
   }, [strokes, view])
 
-  const updateCursor = () => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    providerRef.current?.awareness.setLocalStateField('user', {
-      name: guestName,
-      color: identity.color,
-      cursor: { anchor: textarea.selectionStart, head: textarea.selectionEnd },
-    } satisfies Person)
-  }
-
-  const changeText = (next: string) => {
-    const text = textRef.current
-    if (!text) return
-    const previous = text.toString()
-    let start = 0
-    while (start < previous.length && start < next.length && previous[start] === next[start]) start++
-    let end = 0
-    while (end < previous.length - start && end < next.length - start && previous[previous.length - end - 1] === next[next.length - end - 1]) end++
-    docRef.current?.transact(() => {
-      if (previous.length - start - end) text.delete(start, previous.length - start - end)
-      if (next.length - start - end) text.insert(start, next.slice(start, next.length - end))
-    })
-    updateCursor()
-  }
-
   const changeTitle = (next: string) => {
     setTitle(next)
     metadataRef.current?.set('title', next)
@@ -280,7 +279,7 @@ function Workspace() {
     }
   }
   const exportFile = () => {
-    const blob = new Blob([value], { type: 'text/plain;charset=utf-8' })
+    const blob = new Blob([bodyText], { type: 'text/plain;charset=utf-8' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
     link.download = `${title || 'document'}.txt`
@@ -288,7 +287,8 @@ function Workspace() {
     URL.revokeObjectURL(link.href)
   }
   const chooseLanguage = (event: React.ChangeEvent<HTMLSelectElement>) => setLanguage(event.target.value as Language)
-  const chars = value.length
+  const chars = bodyText.length
+  const onTextChange = React.useCallback((nextText: string) => setBodyText(nextText), [])
 
   return <main className="app-shell" dir={direction}>
     <header className="topbar">
@@ -299,11 +299,14 @@ function Workspace() {
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
         <button className="icon-btn" onClick={exportFile} title={t.download}><ArrowDownToLine size={17} /></button>
         <button className="share-btn" onClick={share}>{copied ? <Check size={16} /> : <Share2 size={16} />}<span>{copied ? t.copied : t.share}</span></button>
-        <div className="profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
+        <button className="mobile-menu-button" onClick={() => setMobileSidebarOpen(true)} aria-label={t.workspace} aria-expanded={mobileSidebarOpen}><MoreVertical size={20} /></button>
+        <div className="profile desktop-profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
+        <div className="profile mobile-profile" title={guestName} aria-label={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
       </div>
     </header>
     <section className="workspace">
-      <aside className="sidebar">
+      {mobileSidebarOpen && <button className="sidebar-backdrop" aria-label={t.workspace} onClick={() => setMobileSidebarOpen(false)} />}
+      <aside className={`sidebar ${mobileSidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="side-section"><div className="side-label">{t.workspace}</div><button className="side-link active"><FileText size={17} /> {t.documents}</button><button className="side-link"><Users size={17} /> {t.sharedWithMe}</button></div>
         <div className="side-section"><div className="side-label">{t.recentDocuments}</div><div className="documents-list">{[...documents].sort((a, b) => b.updatedAt - a.updatedAt).map(document => <div key={document.id} className={`document-row ${document.id === docId ? 'active-document-row' : ''}`}><button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button><button className="remove-document" onClick={() => deleteDocument(document.id)} title={t.removeDocument} aria-label={`${t.removeDocument}: ${document.title}`}><Trash2 size={14} /></button></div>)}</div><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.newDocument}</button></div>
         <div className="sidebar-bottom"><div className="help-card"><CircleHelp size={17} /><span>{t.help}<small>{t.guide}</small></span></div><div className="team-user"><div className="profile small" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div><span><strong>{guestName}</strong><small>{t.freePlan}</small></span><span className="more">···</span></div></div>
@@ -314,8 +317,9 @@ function Workspace() {
           <div className="paper-meta"><span className="doc-label"><span className="tiny-icon">Aa</span> {t.textDocument}</span><span className="updated">{connected ? t.autosaved : t.waitingForConnection}</span></div>
           {view === 'text' ? <>
             <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.documentTitle} />
-            <div className="editor-wrap"><textarea ref={textareaRef} className="editor" value={value} onChange={event => changeText(event.target.value)} onSelect={updateCursor} onKeyUp={updateCursor} placeholder={t.placeholder} aria-label={t.contentLabel} spellCheck="false" /><RemoteCursors people={people} localName={guestName} text={value} /></div>
-            {!value && <div className="starter"><div className="starter-icon"><Sparkles size={19} /></div><strong>{t.starterTitle}</strong><span>{t.starterSubtitle}</span><button onClick={() => textareaRef.current?.focus()}>{t.startWriting} <span>{language === 'he' ? '←' : '→'}</span></button></div>}
+            {editorSession?.id === docId && synced
+              ? <React.Suspense fallback={<div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}><RichTextEditor document={editorSession.document} provider={editorSession.provider} guestName={guestName} color={identity.color} placeholder={t.placeholder} onTextChange={onTextChange} /></React.Suspense>
+              : <div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}
           </> : <>
             <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.boardTitle} />
             <div className="board-tools"><span><MousePointer2 size={15} /> {t.drawHint}</span><div className="colors">{palette.slice(0, 5).map(color => <button key={color} style={{ background: color }} className={drawingColor === color ? 'color-selected' : ''} onClick={() => setDrawingColor(color)} aria-label={t.colorLabel.replace('{color}', color)} />)}</div><button className="clear-board" onClick={() => strokesRef.current?.delete(0, strokesRef.current.length)}><X size={14} /> {t.clearBoard}</button></div>
@@ -328,15 +332,21 @@ function Workspace() {
   </main>
 }
 
-function RemoteCursors({ people, localName, text }: { people: Person[]; localName: string; text: string }) {
-  const { t } = useLanguage()
-  const remote = people.filter(person => person.name !== localName && person.cursor)
-  if (!remote.length) return null
-  return <div className="remote-presence" aria-label={t.editingNow}><span className="remote-heading">{t.editingNow}</span>{remote.map((person, index) => {
-    const before = text.slice(0, Math.min(person.cursor?.head ?? 0, text.length))
-    const line = before.split('\n').length
-    return <div className="remote-person" key={`${person.name}-${index}`}><span className="cursor-swatch" style={{ background: person.color }} /><span>{person.name}</span><small>{t.line.replace('{line}', String(line))}</small></div>
-  })}</div>
+function migrateLegacyContent(document: Y.Doc) {
+  const legacyText = document.getText('content').toString()
+  const richContent = document.getXmlFragment('richContent')
+  if (!legacyText || richContent.length > 0) return
+  document.transact(() => {
+    for (const line of legacyText.split(/\r?\n/)) {
+      const paragraph = new Y.XmlElement('paragraph')
+      if (line) {
+        const text = new Y.XmlText()
+        text.insert(0, line)
+        paragraph.insert(0, [text])
+      }
+      richContent.insert(richContent.length, [paragraph])
+    }
+  })
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>)

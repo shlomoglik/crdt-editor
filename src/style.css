@@ -20,6 +20,30 @@
 .remove-document{position:absolute;inset-inline-end:5px;width:25px;height:25px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#aaa8b4;cursor:pointer;opacity:.55;transition:background .15s,color .15s,opacity .15s}
 .remove-document:hover,.remove-document:focus-visible{background:#f1efff;color:#6655dc;opacity:1}
 .remove-document:focus-visible{outline:2px solid #8e82e8;outline-offset:1px}
+.rich-editor{margin-top:14px}
+.format-toolbar{display:flex;align-items:center;gap:4px;min-height:39px;padding:4px 6px;border:1px solid #eeedf3;border-radius:8px;background:#fcfcfe}
+.format-button{width:30px;height:29px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#777686;cursor:pointer;transition:background .15s,color .15s}
+.format-button:hover:not(:disabled){background:#f0eefb;color:#5d50c4}
+.format-button.active{background:#ece9fc;color:#5d50c4}
+.format-button:disabled{color:#c8c7d0;cursor:default}
+.format-button:focus-visible{outline:2px solid #8e82e8;outline-offset:1px}
+.toolbar-divider{width:1px;height:18px;margin:0 4px;background:#e7e6ed}
+.rich-editor-view{min-height:330px;padding:17px 0 24px;outline:0}
+.rich-editor-content{min-height:290px;outline:0;color:#535260;font:400 15px/2.05 'Heebo',sans-serif;text-align:start;white-space:pre-wrap;overflow-wrap:anywhere}
+.rich-editor-content p{margin:0 0 .8em}
+.rich-editor-content h1,.rich-editor-content h2,.rich-editor-content h3{margin:.7em 0 .35em;color:#302e3e;line-height:1.4}
+.rich-editor-content h1{font-size:1.8em}
+.rich-editor-content h2{font-size:1.45em}
+.rich-editor-content h3{font-size:1.2em}
+.rich-editor-content ul,.rich-editor-content ol{padding-inline-start:1.6em;margin:.6em 0}
+.rich-editor-content blockquote{margin:1em 0;padding-inline-start:14px;border-inline-start:3px solid #d6d1f5;color:#777585}
+.rich-editor-content pre{padding:12px;border-radius:7px;background:#f7f6fa;white-space:pre-wrap}
+.rich-editor-content code{padding:2px 4px;border-radius:4px;background:#f1eff7;font-family:monospace}
+.rich-editor-content p.is-editor-empty:first-child::before{float:inline-start;height:0;color:#bab9c3;content:attr(data-placeholder);pointer-events:none}
+.rich-editor-content .collaboration-carets__caret{position:relative;margin-inline-start:-1px;margin-inline-end:-1px;border-inline-start:1px solid currentColor;border-inline-end:1px solid currentColor;word-break:normal;pointer-events:none}
+.rich-editor-content .collaboration-carets__label{position:absolute;inset-inline-start:-1px;top:-1.5em;padding:2px 6px;border-radius:5px 5px 5px 0;color:#fff;font:600 10px/1.4 'Heebo',sans-serif;white-space:nowrap;user-select:none;pointer-events:none;opacity:.95}
+.rich-editor-loading{min-height:330px;display:grid;place-items:center;color:#aaa9b4;font-size:12px}
+@media(max-width:620px){.format-toolbar{gap:2px;padding:4px}.format-button{width:27px;height:28px}.toolbar-divider{margin:0 2px}.paper{padding-inline:24px}.paper-footer{inset-inline:24px}}
 
 /* Keep the workspace inside the visible window and let its editor pane scroll. */
 html,body,#root{height:100%;min-height:0}
