@@ -20,3 +20,12 @@
 .remove-document{position:absolute;inset-inline-end:5px;width:25px;height:25px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#aaa8b4;cursor:pointer;opacity:.55;transition:background .15s,color .15s,opacity .15s}
 .remove-document:hover,.remove-document:focus-visible{background:#f1efff;color:#6655dc;opacity:1}
 .remove-document:focus-visible{outline:2px solid #8e82e8;outline-offset:1px}
+
+/* Keep the workspace inside the visible window and let its editor pane scroll. */
+html,body,#root{height:100%;min-height:0}
+body{min-height:100vh;min-height:100dvh;overflow:hidden}
+.app-shell{height:100vh;height:100dvh;min-height:0;display:flex;flex-direction:column}
+.workspace{height:calc(100vh - 68px);height:calc(100dvh - 68px);min-height:0;flex:1}
+.main-area{display:flex;flex-direction:column;min-height:0}
+.doc-toolbar{flex:none}
+.editor-scroll{flex:1;min-height:0}
