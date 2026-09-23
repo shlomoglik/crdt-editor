@@ -2,7 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, Menu, MousePointer2, MoreVertical, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, MoreVertical, MousePointer2, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
 import { createDocumentId, isDocumentId, readDocuments, writeDocuments, type DocumentRecord } from './documentStore'
 import './style.css'
@@ -301,7 +301,7 @@ function Workspace() {
         <button className="share-btn" onClick={share}>{copied ? <Check size={16} /> : <Share2 size={16} />}<span>{copied ? t.copied : t.share}</span></button>
         <button className="mobile-menu-button" onClick={() => setMobileSidebarOpen(true)} aria-label={t.workspace} aria-expanded={mobileSidebarOpen}><MoreVertical size={20} /></button>
         <div className="profile desktop-profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
-        <div className="profile mobile-profile" title={guestName} aria-label={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
+        <div className="profile mobile-profile" title={guestName} aria-hidden="true" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
       </div>
     </header>
     <section className="workspace">
