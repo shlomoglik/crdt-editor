@@ -2,8 +2,9 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, MousePointer2, Pencil, Plus, Share2, Sparkles, Users, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, MousePointer2, Pencil, Plus, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
+import { createDocumentId, isDocumentId, readDocuments, writeDocuments, type DocumentRecord } from './documentStore'
 import './style.css'
 
 type Person = { name: string; color: string; cursor?: { anchor: number; head: number } }
@@ -27,6 +28,12 @@ function App() {
 
 function Workspace() {
   const { language, direction, t, setLanguage } = useLanguage()
+  const [documents, setDocuments] = React.useState<DocumentRecord[]>(readDocuments)
+  const documentIndexRef = React.useRef(documents)
+  const [docId, setDocId] = React.useState(() => {
+    const requestedId = new URLSearchParams(location.search).get('doc')
+    return isDocumentId(requestedId) ? requestedId : documents[0]?.id ?? createDocumentId()
+  })
   const docRef = React.useRef<Y.Doc | null>(null)
   const providerRef = React.useRef<WebsocketProvider | null>(null)
   const textRef = React.useRef<Y.Text | null>(null)
@@ -49,9 +56,87 @@ function Workspace() {
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
 
+  const saveDocumentRecord = React.useCallback((id: string, nextTitle: string) => {
+    const current = documentIndexRef.current
+    const existing = current.find(document => document.id === id)
+    const record: DocumentRecord = { id, title: nextTitle, updatedAt: Date.now() }
+    const next = existing
+      ? current.map(document => document.id === id ? record : document)
+      : [record, ...current]
+    documentIndexRef.current = next
+    writeDocuments(next)
+    setDocuments(next)
+  }, [])
+
+  const updateDocumentUrl = React.useCallback((id: string, replace = false) => {
+    const url = new URL(location.href)
+    url.searchParams.set('doc', id)
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', url)
+  }, [])
+
+  const openDocument = (id: string) => {
+    if (id === docId) return
+    updateDocumentUrl(id)
+    setDocId(id)
+  }
+
+  const createDocument = () => {
+    const id = createDocumentId()
+    saveDocumentRecord(id, t.untitled)
+    updateDocumentUrl(id)
+    setDocId(id)
+  }
+
+  const deleteDocument = (id: string) => {
+    const remaining = documentIndexRef.current.filter(document => document.id !== id)
+    if (id === docId && remaining.length === 0) {
+      remaining.push({ id: createDocumentId(), title: t.untitled, updatedAt: Date.now() })
+    }
+    documentIndexRef.current = remaining
+    writeDocuments(remaining)
+    setDocuments(remaining)
+    if (id === docId) {
+      const nextDocument = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      updateDocumentUrl(nextDocument.id, true)
+      setDocId(nextDocument.id)
+    }
+  }
+
   React.useEffect(() => {
+    updateDocumentUrl(docId, true)
+    if (!documents.some(document => document.id === docId)) saveDocumentRecord(docId, t.untitled)
+  }, [docId, documents, saveDocumentRecord, t.untitled, updateDocumentUrl])
+
+  React.useEffect(() => {
+    const onPopState = () => {
+      const requestedId = new URLSearchParams(location.search).get('doc')
+      if (isDocumentId(requestedId)) setDocId(requestedId)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  React.useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'merhav-documents') {
+        const next = readDocuments()
+        documentIndexRef.current = next
+        setDocuments(next)
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  React.useEffect(() => {
+    setValue('')
+    setStrokes([])
+    setPeople([])
+    setConnected(false)
+    setSynced(false)
+    setTitle(languageLabels.current.untitled)
     const doc = new Y.Doc()
-    const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/yjs`, 'merhav-shared-document', doc, { connect: true })
+    const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/yjs`, docId, doc, { connect: true })
     docRef.current = doc
     providerRef.current = provider
     const text = doc.getText('content')
@@ -63,9 +148,19 @@ function Workspace() {
     if (!metadata.has('title')) metadata.set('title', languageLabels.current.untitled)
     provider.awareness.setLocalStateField('user', { name: guestName, color: identity.color } satisfies Person)
 
-    const onText = () => setValue(text.toString())
-    const onBoard = () => setStrokes(board.toArray())
-    const onMetadata = () => setTitle(metadata.get('title') ?? languageLabels.current.untitled)
+    const onText = () => {
+      setValue(text.toString())
+      saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
+    }
+    const onBoard = () => {
+      setStrokes(board.toArray())
+      saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
+    }
+    const onMetadata = () => {
+      const nextTitle = metadata.get('title') ?? languageLabels.current.untitled
+      setTitle(nextTitle)
+      saveDocumentRecord(docId, nextTitle)
+    }
     const onAwareness = () => setPeople(Array.from(provider.awareness.getStates().values()).map(state => state.user as Person | undefined).filter((user): user is Person => !!user))
     const onStatus = ({ status }: { status: string }) => setConnected(status === 'connected')
     const onSync = (isSynced: boolean) => setSynced(isSynced)
@@ -91,7 +186,7 @@ function Workspace() {
       provider.destroy()
       doc.destroy()
     }
-  }, [])
+  }, [docId, saveDocumentRecord])
 
   React.useEffect(() => {
     const user = providerRef.current?.awareness.getLocalState()?.user as Person | undefined
@@ -156,6 +251,7 @@ function Workspace() {
   const changeTitle = (next: string) => {
     setTitle(next)
     metadataRef.current?.set('title', next)
+    saveDocumentRecord(docId, next)
   }
   const pointAt = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -209,7 +305,7 @@ function Workspace() {
     <section className="workspace">
       <aside className="sidebar">
         <div className="side-section"><div className="side-label">{t.workspace}</div><button className="side-link active"><FileText size={17} /> {t.documents}</button><button className="side-link"><Users size={17} /> {t.sharedWithMe}</button></div>
-        <div className="side-section"><div className="side-label">{t.recentDocuments}</div><button className="recent active-recent"><span className="file-badge">Aa</span><span><strong>{title}</strong><small>{t.updatedNow}</small></span></button><button className="recent"><span className="file-badge lavender">✳</span><span><strong>{t.sampleDocument}</strong><small>{t.yesterday}</small></span></button><button className="new-doc" onClick={() => { textRef.current?.delete(0, textRef.current.length); strokesRef.current?.delete(0, strokesRef.current.length); changeTitle(t.untitled) }}><Plus size={16} /> {t.newDocument}</button></div>
+        <div className="side-section"><div className="side-label">{t.recentDocuments}</div><div className="documents-list">{[...documents].sort((a, b) => b.updatedAt - a.updatedAt).map(document => <div key={document.id} className={`document-row ${document.id === docId ? 'active-document-row' : ''}`}><button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button><button className="remove-document" onClick={() => deleteDocument(document.id)} title={t.removeDocument} aria-label={`${t.removeDocument}: ${document.title}`}><Trash2 size={14} /></button></div>)}</div><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.newDocument}</button></div>
         <div className="sidebar-bottom"><div className="help-card"><CircleHelp size={17} /><span>{t.help}<small>{t.guide}</small></span></div><div className="team-user"><div className="profile small" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div><span><strong>{guestName}</strong><small>{t.freePlan}</small></span><span className="more">···</span></div></div>
       </aside>
       <section className="main-area">

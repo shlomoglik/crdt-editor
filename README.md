@@ -18,9 +18,9 @@ The app supports English (`en`) and Hebrew (`he`). `LanguageProvider` exposes th
 
 ## How collaboration works
 
-The browser creates a Yjs document and connects it to the collaboration server with `WebsocketProvider`. Updates to the shared text, title, and whiteboard are synchronized with other clients in the same room. Awareness broadcasts transient presence data such as the guest name, color, and text cursor position. Presence is not persisted with document content.
+The browser creates a Yjs document and connects it to the collaboration server with `WebsocketProvider`. Each document has a generated ID, which is used as its Yjs room name and stored in the `doc` query parameter. Sharing the URL opens that same document for other users. The sidebar lets users create documents and switch between documents they have opened in that browser. Browser back and forward navigation also switches documents.
 
-The room name is currently fixed to `merhav-shared-document`, so every visitor to the same server shares one document. The guest profile color and language preference are stored locally in the browser.
+The document list and guest profile are stored in the browser's `localStorage`. Removing a document from the sidebar only removes its entry from that browser's list; it does not delete the room or its persisted data from the server. A shared link gives another browser access to the document, but does not sync the document list between users. Awareness broadcasts transient presence data such as the guest name, color, and text cursor position. Presence is not persisted with document content.
 
 ## Run locally
 
@@ -51,9 +51,8 @@ npm run preview  # Serve the production build locally
 
 ## Suggested next steps
 
-1. **Add multiple documents and rooms.** Generate a unique document ID, use it as the Yjs room name, and implement document creation and navigation. The current “New document” action clears the shared document for everyone.
-2. **Add accounts and permissions.** Authenticate WebSocket connections and enforce per-document read and write access. The current server accepts unauthenticated connections.
-3. **Adopt a rich text editor and inline cursors.** Integrate an editor with Yjs support, such as Tiptap or ProseMirror, to support formatting and render collaborators' selections and cursors in the text.
-4. **Persist document metadata.** Store a document list, ownership, and update times in a database. The current sidebar's extra document is a visual placeholder.
-5. **Prepare production hosting and backups.** Deploy a reachable WebSocket server, configure a reverse proxy for WebSocket traffic under `/yjs`, provide persistent storage for `.data/`, and add HTTPS, backups, and monitoring.
-6. **Add automated coverage.** Test concurrent Yjs edits, language and direction switching, UI behavior, and recovery after a server restart.
+1. **Add accounts and permissions.** Authenticate WebSocket connections and enforce per-document read and write access. The current server accepts unauthenticated connections.
+2. **Adopt a rich text editor and inline cursors.** Integrate an editor with Yjs support, such as Tiptap or ProseMirror, to support formatting and render collaborators' selections and cursors in the text.
+3. **Sync document discovery and metadata.** Store the document list, ownership, and update times in a database so users can find documents across browsers without relying on shared URLs.
+4. **Prepare production hosting and backups.** Deploy a reachable WebSocket server, configure a reverse proxy for WebSocket traffic under `/yjs`, provide persistent storage for `.data/`, and add HTTPS, backups, and monitoring.
+5. **Add automated coverage.** Test concurrent Yjs edits, language and direction switching, UI behavior, and recovery after a server restart.
