@@ -1,0 +1,30 @@
+{
+  "name": "crdt-collaborative-editor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "cross-env HOST=0.0.0.0 PORT=1234 YPERSISTENCE=./.data node ./node_modules/y-websocket/bin/server.js",
+    "dev:all": "concurrently -k \"npm:server\" \"npm:dev\"",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cross-env": "^7.0.3",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "y-protocols": "^1.0.6",
+    "y-websocket": "^1.5.4",
+    "yjs": "^13.6.20"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.5"
+  }
+}
