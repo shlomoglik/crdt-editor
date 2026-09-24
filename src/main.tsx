@@ -2,9 +2,10 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, Users, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, X } from 'lucide-react'
+import { api, ApiOriginMismatchError, ApiServerUnavailableError, type Account } from './api'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
-import { createDocumentId, isDocumentId, readDocuments, writeDocuments, type DocumentRecord } from './documentStore'
+import { isDocumentId, readDocuments, readLegacyDocuments, removeLegacyDocument, writeDocuments, type DocumentRecord, type LegacyDocumentRecord } from './documentStore'
 import './style.css'
 
 const RichTextEditor = React.lazy(async () => {
@@ -33,14 +34,22 @@ function App() {
 
 function Workspace() {
   const { language, direction, t, setLanguage } = useLanguage()
-  const [documents, setDocuments] = React.useState<DocumentRecord[]>(readDocuments)
+  const [account, setAccount] = React.useState<Account | null | undefined>(undefined)
+  const [documents, setDocuments] = React.useState<DocumentRecord[]>([])
+  const [legacyDocuments, setLegacyDocuments] = React.useState<LegacyDocumentRecord[]>(readLegacyDocuments)
   const documentIndexRef = React.useRef(documents)
   const [documentSearch, setDocumentSearch] = React.useState('')
   const [draggedDocumentId, setDraggedDocumentId] = React.useState<string | null>(null)
   const [dropTargetDocumentId, setDropTargetDocumentId] = React.useState<string | null>(null)
+  const [documentFilter, setDocumentFilter] = React.useState<'all' | 'owner' | 'shared'>('all')
+  const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login')
+  const [usernameInput, setUsernameInput] = React.useState('')
+  const [passwordInput, setPasswordInput] = React.useState('')
+  const [authError, setAuthError] = React.useState('')
+  const [authBusy, setAuthBusy] = React.useState(false)
   const [docId, setDocId] = React.useState(() => {
     const requestedId = new URLSearchParams(location.search).get('doc')
-    return isDocumentId(requestedId) ? requestedId : documents[0]?.id ?? createDocumentId()
+    return isDocumentId(requestedId) ? requestedId : ''
   })
   const providerRef = React.useRef<WebsocketProvider | null>(null)
   const strokesRef = React.useRef<Y.Array<Stroke> | null>(null)
@@ -58,23 +67,24 @@ function Workspace() {
   const [copied, setCopied] = React.useState(false)
   const [drawingColor, setDrawingColor] = React.useState(palette[0])
   const drawing = React.useRef<{ color: string; points: { x: number; y: number }[] } | null>(null)
-  const guestName = `${t.guestName} ${identity.suffix}`
+  const guestName = account?.username ?? `${t.guestName} ${identity.suffix}`
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
 
 
   const saveDocumentRecord = React.useCallback((id: string, nextTitle: string) => {
+    if (!account) return
     const current = documentIndexRef.current
     const existing = current.find(document => document.id === id)
+    if (!existing) return
     const order = existing?.order ?? Math.min(0, ...current.map(document => document.order)) - 1
-    const record: DocumentRecord = { id, title: nextTitle, updatedAt: Date.now(), order }
-    const next = existing
-      ? current.map(document => document.id === id ? record : document)
-      : [record, ...current]
+    const record: DocumentRecord = { ...existing, title: nextTitle, updatedAt: Date.now(), order }
+    const next = current.map(document => document.id === id ? record : document)
     documentIndexRef.current = next
-    writeDocuments(next)
+    writeDocuments(account.id, next)
     setDocuments(next)
-  }, [])
+    if (existing.title !== nextTitle) void api.renameDocument(id, nextTitle).catch(() => undefined)
+  }, [account?.id])
 
   const updateDocumentUrl = React.useCallback((id: string, replace = false) => {
     const url = new URL(location.href)
@@ -88,25 +98,56 @@ function Workspace() {
     setDocId(id)
   }
 
-  const createDocument = () => {
-    const id = createDocumentId()
-    saveDocumentRecord(id, t.untitled)
-    updateDocumentUrl(id)
-    setDocId(id)
+  const createDocument = async () => {
+    if (!account) return
+    try {
+      const { document } = await api.createDocument(t.untitled)
+      const current = documentIndexRef.current
+      const ordered = [document, ...current].map((entry, order) => ({ ...entry, order })) as DocumentRecord[]
+      documentIndexRef.current = ordered
+      writeDocuments(account.id, ordered)
+      setDocuments(ordered)
+      updateDocumentUrl(document.id)
+      setDocId(document.id)
+    } catch (error) {
+      setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
+    }
   }
 
-  const deleteDocument = (id: string) => {
-    const remaining = documentIndexRef.current.filter(document => document.id !== id)
-    if (id === docId && remaining.length === 0) {
-      remaining.push({ id: createDocumentId(), title: t.untitled, updatedAt: Date.now(), order: 0 })
+  const deleteDocument = async (id: string) => {
+    if (!account) return
+    const selected = documentIndexRef.current.find(document => document.id === id)
+    if (!selected) return
+    if (selected.access === 'owner') {
+      const message = selected.sharedWithCount > 0
+        ? t.confirmDeleteSharedDocument.replace('{count}', String(selected.sharedWithCount))
+        : t.confirmDeleteDocument
+      if (!window.confirm(message)) return
     }
-    documentIndexRef.current = remaining
-    writeDocuments(remaining)
-    setDocuments(remaining)
+    try {
+      if (selected.access === 'owner') await api.deleteDocument(id)
+      else await api.leaveDocument(id)
+    } catch (error) {
+      setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
+      return
+    }
+    const remaining = documentIndexRef.current.filter(document => document.id !== id)
+    const ordered = remaining.map((document, order) => ({ ...document, order }))
+    documentIndexRef.current = ordered
+    writeDocuments(account.id, ordered)
+    setDocuments(ordered)
     if (id === docId) {
-      const nextDocument = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-      updateDocumentUrl(nextDocument.id, true)
-      setDocId(nextDocument.id)
+      const nextDocument = ordered[0]
+      if (nextDocument) {
+        updateDocumentUrl(nextDocument.id, true)
+        setDocId(nextDocument.id)
+      } else {
+        window.history.replaceState({}, '', location.pathname)
+        setDocId('')
+        setTitle(t.untitled)
+        setBodyText('')
+        setStrokes([])
+      }
     }
   }
 
@@ -121,7 +162,7 @@ function Workspace() {
     reordered.splice(targetIndex, 0, source)
     const next = reordered.map((document, order) => ({ ...document, order }))
     documentIndexRef.current = next
-    writeDocuments(next)
+    if (account) writeDocuments(account.id, next)
     setDocuments(next)
   }
 
@@ -147,18 +188,122 @@ function Workspace() {
   }
 
   const visibleDocuments = documents
+    .filter(document => documentFilter === 'all' || document.access === documentFilter)
     .filter(document => document.title.toLocaleLowerCase(language).includes(documentSearch.trim().toLocaleLowerCase(language)))
     .sort((a, b) => a.order - b.order)
 
+  const refreshDocuments = React.useCallback(async (user: Account) => {
+    const { documents: remoteDocuments } = await api.listDocuments()
+    const cachedDocuments = readDocuments(user.id)
+    const cachedOrder = new Map(cachedDocuments.map(document => [document.id, document.order]))
+    const newDocuments = remoteDocuments.filter(document => !cachedOrder.has(document.id)).sort((a, b) => b.updatedAt - a.updatedAt)
+    const knownDocuments = remoteDocuments.filter(document => cachedOrder.has(document.id)).sort((a, b) => cachedOrder.get(a.id)! - cachedOrder.get(b.id)!)
+    const next = [...newDocuments, ...knownDocuments]
+      .map((document, order) => ({ ...document, order })) as DocumentRecord[]
+    documentIndexRef.current = next
+    writeDocuments(user.id, next)
+    setDocuments(next)
+    return next
+  }, [])
+
   React.useEffect(() => {
-    updateDocumentUrl(docId, true)
-    if (!documents.some(document => document.id === docId)) saveDocumentRecord(docId, t.untitled)
-  }, [docId, documents, saveDocumentRecord, t.untitled, updateDocumentUrl])
+    let active = true
+    api.session().then(async ({ user }) => {
+      if (!active) return
+      setAccount(user)
+      if (!user) return
+      const next = await refreshDocuments(user)
+      if (!active) return
+      const requestedId = new URLSearchParams(location.search).get('doc')
+      const selected = next.find(document => document.id === requestedId) ?? next[0]
+      if (selected) {
+        setDocId(selected.id)
+        updateDocumentUrl(selected.id, true)
+      } else {
+        setDocId('')
+        window.history.replaceState({}, '', location.pathname)
+      }
+    }).catch(() => { if (active) setAccount(null) })
+    return () => { active = false }
+  }, [refreshDocuments, updateDocumentUrl])
+
+  React.useEffect(() => {
+    if (!account) return
+    const refreshTimer = window.setInterval(() => {
+      void refreshDocuments(account).then(next => {
+        if (docId && !next.some(document => document.id === docId)) {
+          const nextDocument = next[0]
+          setDocId(nextDocument?.id ?? '')
+          if (nextDocument) updateDocumentUrl(nextDocument.id, true)
+          else window.history.replaceState({}, '', location.pathname)
+        }
+      }).catch(() => undefined)
+    }, 10000)
+    return () => window.clearInterval(refreshTimer)
+  }, [account, docId, refreshDocuments, updateDocumentUrl])
+
+  const authenticate = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const result = await api.authenticate(authMode === 'register' ? '/api/register' : '/api/login', usernameInput, passwordInput)
+      setAccount(result.user)
+      setPasswordInput('')
+      const next = await refreshDocuments(result.user)
+      const selected = next.find(document => document.id === new URLSearchParams(location.search).get('doc')) ?? next[0]
+      if (selected) {
+        setDocId(selected.id)
+        updateDocumentUrl(selected.id, true)
+      } else {
+        setDocId('')
+        window.history.replaceState({}, '', location.pathname)
+      }
+    } catch (error) {
+      setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const signOut = async () => {
+    try { await api.logout() } catch { /* The local session still needs to close. */ }
+    setAccount(null)
+    setDocuments([])
+    documentIndexRef.current = []
+    setDocId('')
+    window.history.replaceState({}, '', location.pathname)
+  }
+
+  const claimLegacyDocument = async (document: LegacyDocumentRecord) => {
+    if (!account) return
+    const message = t.confirmClaimLegacyDocument.replace('{title}', document.title)
+    if (!window.confirm(message)) return
+    try {
+      await api.claimLegacyDocument(document.id, document.title)
+      removeLegacyDocument(document.id)
+      setLegacyDocuments(current => current.filter(entry => entry.id !== document.id))
+      const next = await refreshDocuments(account)
+      if (!docId) {
+        const claimed = next.find(entry => entry.id === document.id)
+        if (claimed) {
+          updateDocumentUrl(claimed.id, true)
+          setDocId(claimed.id)
+        }
+      }
+    } catch (error) {
+      setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
+    }
+  }
+
+  React.useEffect(() => {
+    if (docId) updateDocumentUrl(docId, true)
+  }, [docId, updateDocumentUrl])
 
   React.useEffect(() => {
     const onPopState = () => {
       const requestedId = new URLSearchParams(location.search).get('doc')
-      if (isDocumentId(requestedId)) setDocId(requestedId)
+      if (isDocumentId(requestedId) && documentIndexRef.current.some(document => document.id === requestedId)) setDocId(requestedId)
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -166,17 +311,18 @@ function Workspace() {
 
   React.useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key === 'merhav-documents') {
-        const next = readDocuments()
+      if (account && event.key === `merhav-documents-${account.id}`) {
+        const next = readDocuments(account.id)
         documentIndexRef.current = next
         setDocuments(next)
       }
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  }, [account])
 
   React.useEffect(() => {
+    if (!account || !docId || !documentIndexRef.current.some(document => document.id === docId)) return
     setEditorSession(null)
     setBodyText('')
     setStrokes([])
@@ -185,7 +331,7 @@ function Workspace() {
     setSynced(false)
     setTitle(languageLabels.current.untitled)
     const doc = new Y.Doc()
-    const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/yjs`, docId, doc, { connect: true })
+    const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/yjs`, docId, doc, { connect: true, disableBc: true })
     providerRef.current = provider
     setEditorSession({ id: docId, document: doc, provider })
     const board = doc.getArray<Stroke>('board')
@@ -193,16 +339,21 @@ function Workspace() {
     strokesRef.current = board
     metadataRef.current = metadata
     const richContent = doc.getXmlFragment('richContent')
-    if (!metadata.has('title')) metadata.set('title', languageLabels.current.untitled)
     provider.awareness.setLocalStateField('user', { name: guestName, color: identity.color } satisfies Person)
 
+    let documentSynced = false
+    const saveSyncedTitle = () => {
+      const sharedTitle = metadata.get('title')
+      if (documentSynced && sharedTitle !== undefined) saveDocumentRecord(docId, sharedTitle)
+    }
     const onBoard = () => {
       setStrokes(board.toArray())
-      saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
+      saveSyncedTitle()
     }
-    const onRichContent = () => saveDocumentRecord(docId, metadata.get('title') ?? languageLabels.current.untitled)
+    const onRichContent = () => saveSyncedTitle()
     const onMetadata = () => {
-      const nextTitle = metadata.get('title') ?? languageLabels.current.untitled
+      const nextTitle = metadata.get('title')
+      if (!documentSynced || nextTitle === undefined) return
       setTitle(nextTitle)
       saveDocumentRecord(docId, nextTitle)
     }
@@ -211,11 +362,22 @@ function Workspace() {
     let migrationTimer: number | undefined
     const onSync = (isSynced: boolean) => {
       if (!isSynced) {
+        documentSynced = false
         setSynced(false)
         return
       }
       window.clearTimeout(migrationTimer)
       migrationTimer = window.setTimeout(() => {
+        documentSynced = true
+        if (!metadata.has('title')) {
+          const listedTitle = documentIndexRef.current.find(document => document.id === docId)?.title
+          metadata.set('title', listedTitle ?? languageLabels.current.untitled)
+        }
+        const sharedTitle = metadata.get('title')
+        if (sharedTitle !== undefined) {
+          setTitle(sharedTitle)
+          saveDocumentRecord(docId, sharedTitle)
+        }
         const clients = [...provider.awareness.getStates().keys()].sort((a, b) => a - b)
         if (clients[0] === provider.awareness.clientID) migrateLegacyContent(doc)
         setSynced(true)
@@ -245,7 +407,7 @@ function Workspace() {
       provider.destroy()
       doc.destroy()
     }
-  }, [docId, saveDocumentRecord])
+  }, [account?.id, docId, guestName, saveDocumentRecord])
 
   React.useEffect(() => {
     const user = providerRef.current?.awareness.getLocalState()?.user as Person | undefined
@@ -283,6 +445,7 @@ function Workspace() {
   }, [strokes, view])
 
   const changeTitle = (next: string) => {
+    if (!docId || !synced) return
     setTitle(next)
     metadataRef.current?.set('title', next)
     saveDocumentRecord(docId, next)
@@ -305,12 +468,20 @@ function Workspace() {
     strokesRef.current?.push([stroke])
   }
   const share = async () => {
+    if (!account || !docId) return
     try {
-      await navigator.clipboard.writeText(location.href)
+      const username = window.prompt(t.sharePrompt)
+      if (!username) return
+      await api.shareDocument(docId, username)
+      const url = new URL(location.href)
+      url.searchParams.set('doc', docId)
+      try { await navigator.clipboard.writeText(url.toString()) } catch { window.prompt(t.copyPrompt, url.toString()) }
+      await refreshDocuments(account)
+      setAuthError('')
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
-    } catch {
-      window.prompt(t.copyPrompt, location.href)
+    } catch (error) {
+      setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
     }
   }
   const exportFile = () => {
@@ -325,23 +496,50 @@ function Workspace() {
   const chars = bodyText.length
   const onTextChange = React.useCallback((nextText: string) => setBodyText(nextText), [])
 
+  if (account === undefined) return <main className="auth-shell" dir={direction}><div className="auth-card">{t.authLoading}</div></main>
+  if (!account) return <main className="auth-shell" dir={direction}>
+    <form className="auth-card" onSubmit={authenticate}>
+      <a className="brand auth-brand" href="#" aria-label={t.brand}><span className="brand-mark"><Sparkles size={18} /></span><span>{t.brand}</span></a>
+      <h1>{authMode === 'register' ? t.createAccount : t.signIn}</h1>
+      <label>{t.username}<input autoComplete="username" autoCapitalize="none" spellCheck={false} pattern="[a-zA-Z0-9_]{3,24}" value={usernameInput} onChange={event => setUsernameInput(event.target.value)} required minLength={3} maxLength={24} /></label>
+      <label>{t.password}<input type="password" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} value={passwordInput} onChange={event => setPasswordInput(event.target.value)} required minLength={10} maxLength={200} /></label>
+      <p className="auth-requirements">{t.accountRequirements}</p>
+      {authError && <p className="auth-error" role="alert">{authError}</p>}
+      <button className="auth-submit" type="submit" disabled={authBusy}>{authBusy ? t.connecting : authMode === 'register' ? t.signUp : t.signIn}</button>
+      <button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === 'register' ? 'login' : 'register'); setAuthError('') }}>{authMode === 'register' ? t.switchToSignIn : t.switchToSignUp}</button>
+      <label className="language-picker auth-language"><span>{t.selectLanguage}</span><select value={language} onChange={chooseLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
+    </form>
+  </main>
+
   return <main className="app-shell" dir={direction}>
     <header className="topbar">
       <a className="brand" href="#" aria-label={t.brand}><span className="brand-mark"><Sparkles size={18} /></span><span>{t.brand}</span></a>
-      <div className="breadcrumb"><span>{t.breadcrumb}</span><span className="slash">/</span>{editingTitle ? <input autoFocus value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" onClick={() => setEditingTitle(true)}>{title}<span className="edit-dot" /></button>}</div>
+      <div className="breadcrumb"><span>{documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{title}<span className="edit-dot" /></button>}</div>
       <div className="top-actions">
         <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
         <button className="icon-btn" onClick={exportFile} title={t.download}><ArrowDownToLine size={17} /></button>
         <button className="share-btn" onClick={share}>{copied ? <Check size={16} /> : <Share2 size={16} />}<span>{copied ? t.copied : t.share}</span></button>
-        <div className="profile" title={guestName} style={{ background: identity.color }}>{guestName.slice(0, 1)}</div>
+        <button className="account-button" onClick={signOut} title={t.signOut}><div className="profile" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div></button>
       </div>
     </header>
+    {authError && <div className="workspace-error" role="alert">{authError}<button onClick={() => setAuthError('')} aria-label={t.close}><X size={14} /></button></div>}
     <section className="workspace">
       <aside className="sidebar">
-        <div className="side-section"><div className="side-label">{t.workspace}</div><button className="side-link active"><FileText size={17} /> {t.documents}</button><button className="side-link"><Users size={17} /> {t.sharedWithMe}</button></div>
+        <div className="side-section"><div className="side-label">{t.workspace}</div><div className="document-filters" role="group" aria-label={t.documents}>
+          <button className={documentFilter === 'all' ? 'selected' : ''} onClick={() => setDocumentFilter('all')}>{t.allDocuments}</button>
+          <button className={documentFilter === 'owner' ? 'selected' : ''} onClick={() => setDocumentFilter('owner')}>{t.myDocuments}</button>
+          <button className={documentFilter === 'shared' ? 'selected' : ''} onClick={() => setDocumentFilter('shared')}>{t.sharedWithMe}</button>
+        </div></div>
+        {legacyDocuments.length > 0 && <div className="side-section legacy-documents">
+          <div className="side-label">{t.legacyDocuments}</div>
+          <div className="legacy-document-list">{legacyDocuments.map(document => <div className="legacy-document" key={document.id}>
+            <span title={document.title}>{document.title}</span>
+            <button onClick={() => void claimLegacyDocument(document)}>{t.claimLegacyDocument}</button>
+          </div>)}</div>
+        </div>}
         <div className="side-section">
-          <div className="side-label">{t.recentDocuments}</div>
+          <div className="side-label">{t.documents}</div>
           <label className="document-search"><Search size={15} /><input type="search" value={documentSearch} onChange={event => setDocumentSearch(event.target.value)} placeholder={t.searchDocumentsPlaceholder} aria-label={t.searchDocuments} /></label>
           <div className="documents-list">
             {visibleDocuments.map(document => <div
@@ -363,31 +561,33 @@ function Workspace() {
                 aria-keyshortcuts="ArrowUp ArrowDown"
                 title={`${t.moveDocumentUp} / ${t.moveDocumentDown}`}
               ><GripVertical size={15} /></button>
-              <button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button>
-              <button className="remove-document" onClick={() => deleteDocument(document.id)} title={t.removeDocument} aria-label={`${t.removeDocument}: ${document.title}`}><Trash2 size={14} /></button>
+              <button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.access === 'shared' ? t.sharedDocumentOwner.replace('{owner}', document.ownerUsername) : document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button>
+              <button className="remove-document" onClick={() => void deleteDocument(document.id)} title={document.access === 'owner' ? t.deleteDocument : t.leaveSharedDocument} aria-label={`${document.access === 'owner' ? t.deleteDocument : t.leaveSharedDocument}: ${document.title}`}><Trash2 size={14} /></button>
             </div>)}
             {visibleDocuments.length === 0 && <div className="document-search-empty">{t.noMatchingDocuments}</div>}
           </div>
           <button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.newDocument}</button>
         </div>
-        <div className="sidebar-bottom"><div className="help-card"><CircleHelp size={17} /><span>{t.help}<small>{t.guide}</small></span></div><div className="team-user"><div className="profile small" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div><span><strong>{guestName}</strong><small>{t.freePlan}</small></span><span className="more">···</span></div></div>
+        <div className="sidebar-bottom"><div className="help-card"><CircleHelp size={17} /><span>{t.help}<small>{t.guide}</small></span></div><div className="team-user"><div className="profile small" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div><span><strong>{guestName}</strong><small>{t.account}</small></span><span className="more">···</span></div></div>
       </aside>
       <section className="main-area">
+        {docId ? <>
         <div className="doc-toolbar"><div className="view-tabs"><button className={view === 'text' ? 'selected' : ''} onClick={() => setView('text')}><FileText size={16} /> {t.documentTab}</button><button className={view === 'board' ? 'selected' : ''} onClick={() => setView('board')}><Pencil size={16} /> {t.boardTab}</button></div><div className="collaborators"><div className="avatar-stack">{people.slice(0, 4).map((person, index) => <div key={`${person.name}-${index}`} className="avatar" style={{ background: person.color }} title={person.name}>{person.name.slice(0, 1)}</div>)}</div><span className="people-count">{people.length} {t.here}</span><span className="presence-dot" /></div></div>
         <div className="editor-scroll"><div className="paper">
           <div className="paper-meta"><span className="doc-label"><span className="tiny-icon">Aa</span> {t.textDocument}</span><span className="updated">{connected ? t.autosaved : t.waitingForConnection}</span></div>
           {view === 'text' ? <>
-            <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.documentTitle} />
+            <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.documentTitle} disabled={!synced} />
             {editorSession?.id === docId && synced
               ? <React.Suspense fallback={<div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}><RichTextEditor document={editorSession.document} provider={editorSession.provider} guestName={guestName} color={identity.color} placeholder={t.placeholder} onTextChange={onTextChange} /></React.Suspense>
               : <div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}
           </> : <>
-            <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.boardTitle} />
+            <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.boardTitle} disabled={!synced} />
             <div className="board-tools"><span><MousePointer2 size={15} /> {t.drawHint}</span><div className="colors">{palette.slice(0, 5).map(color => <button key={color} style={{ background: color }} className={drawingColor === color ? 'color-selected' : ''} onClick={() => setDrawingColor(color)} aria-label={t.colorLabel.replace('{color}', color)} />)}</div><button className="clear-board" onClick={() => strokesRef.current?.delete(0, strokesRef.current.length)}><X size={14} /> {t.clearBoard}</button></div>
             <canvas ref={canvasRef} className="board" onPointerDown={beginDraw} onPointerMove={moveDraw} onPointerUp={endDraw} onPointerCancel={endDraw} aria-label={t.boardTab} />
           </>}
           <div className="paper-footer"><span><span className="tiny-icon">Aa</span> {chars} {t.characterCount}</span><span>{t.sharedInRealTime} <span className="footer-spark">✦</span></span></div>
         </div></div>
+        </> : <div className="empty-workspace"><p>{t.noDocumentSelected}</p><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.createFirstDocument}</button></div>}
       </section>
     </section>
   </main>

@@ -10,6 +10,7 @@ A browser-based collaborative text editor and whiteboard. Multiple users can edi
 - **Yjs** stores shared document data as a `Y.XmlFragment` (rich-text content), `Y.Map` (title), and `Y.Array` (whiteboard strokes). Its CRDT data model merges concurrent edits.
 - **y-websocket** synchronizes Yjs updates between connected browsers and carries ephemeral user presence through Yjs Awareness.
 - **LevelDB**, through the y-websocket server's persistence adapter, stores document updates on disk so the document can be restored after a server restart.
+- **Node.js HTTP and WebSocket server** handles accounts, sessions, document ownership, sharing, permissions, and permanent deletion. Passwords are stored as `scrypt` hashes and session cookies are `HttpOnly`.
 - **Vite** provides the development server and production bundler. In development, it proxies WebSocket requests from `/yjs` to the collaboration server.
 - **Lucide React** provides interface icons.
 
@@ -19,9 +20,9 @@ The app supports English (`en`) and Hebrew (`he`). `LanguageProvider` exposes th
 
 ## How collaboration works
 
-The browser creates a Yjs document and connects it to the collaboration server with `WebsocketProvider`. Rich text is stored in a Yjs XML fragment and synchronized through Tiptap's Collaboration extension. Plain text from documents created before the rich-text editor is migrated into paragraphs after the room syncs. Each document has a generated ID, which is used as its Yjs room name and stored in the `doc` query parameter. Sharing the URL opens that same document for other users. The sidebar lets users create documents and switch between documents they have opened in that browser. Browser back and forward navigation also switches documents.
+Users create an account or sign in before accessing documents. The server stores account and document metadata in `.data/merhav.json`; passwords are hashed with Node's `scrypt`, and authenticated sessions use an `HttpOnly`, `SameSite=Strict` cookie. Each document has a generated ID, which is used as its Yjs room name and stored in the `doc` query parameter. Owners share a document with another account by username. The recipient can open the shared link after signing in. HTTP operations and WebSocket upgrades check access against server-side ownership and recipient permissions.
 
-The document list, its custom order, and the guest profile are stored in the browser's `localStorage`. The sidebar search and drag-and-drop ordering only affect that browser. New documents and newly opened shared documents appear at the top of the list. Removing a document from the sidebar only removes its entry from that browser's list; it does not delete the room or its persisted data from the server. A shared link gives another browser access to the document, but does not sync the document list between users. Awareness broadcasts transient presence data such as the guest name, color, text caret, and selection. Presence is not persisted with document content.
+The sidebar filters **All**, **My documents**, and **Shared with me** using server-owned metadata. Search and custom ordering are stored in `localStorage` per account and browser. New documents and newly shared documents appear at the top of the local order. Old browser-local documents appear in an **Older documents** section and are not assigned automatically; explicitly claim only documents you own. Recipients can remove a shared document from their own list; owners can permanently delete a document. Permanent deletion closes active room connections, removes the Yjs LevelDB data, and revokes access. Deleting a document shared with others requires confirmation. Awareness broadcasts transient presence data such as the account name, color, text caret, and selection. Presence is not persisted with document content.
 
 ## Run locally
 
@@ -32,7 +33,7 @@ npm install
 npm run dev:all
 ```
 
-Open the Vite URL printed in the terminal. `dev:all` starts Vite and the y-websocket server on port `1234`. To collaborate, open the same URL in another browser or share it with users who can reach the host machine.
+Open the Vite URL printed in the terminal. `dev:all` starts Vite and the application server on port `1234`. Create an account in each browser. To collaborate, the owner enters the recipient's username in the Share prompt and sends them the copied document URL.
 
 You can also start each server separately:
 
@@ -41,7 +42,7 @@ npm run server
 npm run dev
 ```
 
-Persistence data is stored under `.data/`, which is ignored by Git. Back up this directory to retain documents. Removing it deletes the locally persisted data.
+Account, access, and document metadata are stored in `.data/merhav.json`; Yjs updates are stored in the LevelDB files under `.data/`. The directory is ignored by Git. Back up this directory to retain accounts and documents. Removing it deletes the local application data.
 
 ## Useful commands
 
@@ -52,7 +53,6 @@ npm run preview  # Serve the production build locally
 
 ## Suggested next steps
 
-1. **Add accounts and permissions.** Authenticate WebSocket connections and enforce per-document read and write access. The current server accepts unauthenticated connections.
-2. **Sync document discovery and metadata.** Store the document list, ownership, and update times in a database so users can find documents across browsers without relying on shared URLs.
-3. **Prepare production hosting and backups.** Deploy a reachable WebSocket server, configure a reverse proxy for WebSocket traffic under `/yjs`, provide persistent storage for `.data/`, and add HTTPS, backups, and monitoring.
-4. **Add automated coverage.** Test concurrent Yjs edits, language and direction switching, UI behavior, and recovery after a server restart.
+1. **Harden account management.** Add rate limiting, password reset, account recovery, and a database with transactional metadata updates.
+2. **Prepare production hosting and backups.** Deploy a reachable WebSocket server, configure a reverse proxy for WebSocket traffic under `/yjs`, provide persistent storage for `.data/`, and add HTTPS, backups, and monitoring.
+3. **Add automated coverage.** Test access control, document sharing and deletion, concurrent Yjs edits, language and direction switching, UI behavior, and recovery after a server restart.

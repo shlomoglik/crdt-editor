@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "cross-env HOST=0.0.0.0 PORT=1234 YPERSISTENCE=./.data node ./node_modules/y-websocket/bin/server.js",
+    "server": "cross-env HOST=0.0.0.0 PORT=1234 YPERSISTENCE=./.data node ./server.cjs",
     "dev:all": "concurrently -k \"npm:server\" \"npm:dev\"",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
