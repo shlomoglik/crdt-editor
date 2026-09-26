@@ -77,7 +77,7 @@ function Workspace() {
   const [drawingColor, setDrawingColor] = React.useState(palette[0])
   const drawing = React.useRef<{ color: string; points: { x: number; y: number }[] } | null>(null)
   const guestName = account?.username ?? `${t.guestName} ${identity.suffix}`
-  const documentReady = editorSession?.id === docId && synced
+  const documentReady = synced
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
   const showDialog = (mode: DialogState['mode'], message: string, initialValue = '') => new Promise<string | boolean | null>(resolve => {
