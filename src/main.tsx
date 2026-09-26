@@ -53,6 +53,9 @@ function Workspace() {
   const [authBusy, setAuthBusy] = React.useState(false)
   const [dialog, setDialog] = React.useState<DialogState | null>(null)
   const [dialogValue, setDialogValue] = React.useState('')
+  const [membersArea, setMembersArea] = React.useState<Area | null>(null)
+  const [memberPendingRemoval, setMemberPendingRemoval] = React.useState<{ id: string; username: string } | null>(null)
+  const [confirmAreaLeave, setConfirmAreaLeave] = React.useState(false)
   const [docId, setDocId] = React.useState(() => {
     const requestedId = new URLSearchParams(location.search).get('doc')
     return isDocumentId(requestedId) ? requestedId : ''
@@ -74,6 +77,7 @@ function Workspace() {
   const [drawingColor, setDrawingColor] = React.useState(palette[0])
   const drawing = React.useRef<{ color: string; points: { x: number; y: number }[] } | null>(null)
   const guestName = account?.username ?? `${t.guestName} ${identity.suffix}`
+  const documentReady = editorSession?.id === docId && synced
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
   const showDialog = (mode: DialogState['mode'], message: string, initialValue = '') => new Promise<string | boolean | null>(resolve => {
@@ -241,16 +245,26 @@ function Workspace() {
     try { await api.inviteToArea(area.id, username); setAuthError('') } catch { setAuthError(t.authError) }
   }
   const manageAreaMembers = async (area: Area) => {
-    const roster = area.members.map(member => `${member.username}${member.id === area.ownerId ? ' (owner)' : ''}`).join('\n')
-    const selected = await showDialog('input', `${t.areaMembers}:\n${roster}\n\n${area.isOwner ? t.removeAreaMember : t.leaveArea}`)
-    if (typeof selected !== 'string' || !selected.trim()) return
-    if (!area.isOwner) {
-      if (await showDialog('confirm', t.leaveArea + '?')) { try { await api.leaveArea(area.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) } }
-      return
-    }
-    const member = area.members.find(entry => entry.username.toLowerCase() === selected.trim().toLowerCase())
-    if (!member || member.id === area.ownerId) return
-    try { await api.removeAreaMember(area.id, member.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) }
+    setMembersArea(area)
+    setMemberPendingRemoval(null)
+    setConfirmAreaLeave(false)
+  }
+  const removeAreaMember = async () => {
+    if (!membersArea || !memberPendingRemoval) return
+    try {
+      await api.removeAreaMember(membersArea.id, memberPendingRemoval.id)
+      setMembersArea(current => current ? { ...current, members: current.members.filter(member => member.id !== memberPendingRemoval.id) } : null)
+      setMemberPendingRemoval(null)
+      await refreshAreas(); await refreshDocuments(account!)
+    } catch { setAuthError(t.authError) }
+  }
+  const leaveManagedArea = async () => {
+    if (!membersArea) return
+    try {
+      await api.leaveArea(membersArea.id)
+      setMembersArea(null); setConfirmAreaLeave(false); setSelectedAreaId(null)
+      await refreshAreas(); await refreshDocuments(account!)
+    } catch { setAuthError(t.authError) }
   }
   const moveToArea = async (document: DocumentRecord, areaId: string) => {
     try { await api.moveDocumentToArea(document.id, areaId || null); await refreshDocuments(account!); } catch { setAuthError(t.authError) }
@@ -568,7 +582,7 @@ function Workspace() {
   return <main className="app-shell" dir={direction}>
     <header className="topbar">
       <a className="brand" href="#" aria-label={t.brand}><span className="brand-mark"><Sparkles size={18} /></span><span>{t.brand}</span></a>
-      <div className="breadcrumb"><span>{areas.find(area => area.id === selectedAreaId)?.name ?? (documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe)}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{title}<span className="edit-dot" /></button>}</div>
+      <div className="breadcrumb"><span>{areas.find(area => area.id === selectedAreaId)?.name ?? (documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe)}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{docId && !documentReady ? t.editorLoading : title}{documentReady && <span className="edit-dot" />}</button>}</div>
       <div className="top-actions">
         <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
@@ -639,7 +653,8 @@ function Workspace() {
       <section className="main-area">
         {docId ? <>
         <div className="doc-toolbar"><div className="view-tabs"><button className={view === 'text' ? 'selected' : ''} onClick={() => setView('text')}><FileText size={16} /> {t.documentTab}</button><button className={view === 'board' ? 'selected' : ''} onClick={() => setView('board')}><Pencil size={16} /> {t.boardTab}</button></div><div className="collaborators"><div className="avatar-stack">{people.slice(0, 4).map((person, index) => <div key={`${person.name}-${index}`} className="avatar" style={{ background: person.color }} title={person.name}>{person.name.slice(0, 1)}</div>)}</div><span className="people-count">{people.length} {t.here}</span><span className="presence-dot" /></div></div>
-        <div className="editor-scroll"><div className="paper">
+        <div className="editor-scroll"><div className={`paper ${!documentReady ? 'paper-loading' : ''}`}>
+          {!documentReady ? <div className="document-loading" aria-live="polite">{t.editorLoading}</div> : <>
           <div className="paper-meta"><span className="doc-label"><span className="tiny-icon">Aa</span> {t.textDocument}</span><span className="updated">{connected ? t.autosaved : t.waitingForConnection}</span></div>
           {view === 'text' ? <>
             <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.documentTitle} disabled={!synced} />
@@ -652,6 +667,7 @@ function Workspace() {
             <canvas ref={canvasRef} className="board" onPointerDown={beginDraw} onPointerMove={moveDraw} onPointerUp={endDraw} onPointerCancel={endDraw} aria-label={t.boardTab} />
           </>}
           <div className="paper-footer"><span><span className="tiny-icon">Aa</span> {chars} {t.characterCount}</span><span>{t.sharedInRealTime} <span className="footer-spark">✦</span></span></div>
+          </>}
         </div></div>
         </> : <div className="empty-workspace"><p>{t.noDocumentSelected}</p><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.createFirstDocument}</button></div>}
       </section>
@@ -665,6 +681,19 @@ function Workspace() {
           <button type="submit" className="dialog-submit">{dialog.mode === 'confirm' ? t.confirm : t.ok}</button>
         </div>
       </form>
+    </div>}
+    {membersArea && <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) { setMembersArea(null); setConfirmAreaLeave(false) } }}>
+      <section className="app-dialog members-dialog" role="dialog" aria-modal="true" aria-labelledby="members-dialog-title" dir={direction}>
+        <div className="members-dialog-heading"><div><h2 id="members-dialog-title">{t.areaMembers}</h2><p>{membersArea.name}</p></div><button type="button" className="members-dialog-close" onClick={() => { setMembersArea(null); setConfirmAreaLeave(false) }} aria-label={t.cancel}><X size={18} /></button></div>
+        <div className="area-member-list">{membersArea.members.map(member => <div className="area-member-item" key={member.id}>
+          <div className="area-member-identity"><span className="area-member-avatar">{member.username.slice(0, 1).toLocaleUpperCase()}</span><span>{member.username}{member.id === membersArea.ownerId && <small>{t.areaOwnerRole}</small>}</span></div>
+          {membersArea.isOwner && member.id !== membersArea.ownerId && <button type="button" className="member-remove-button" onClick={() => setMemberPendingRemoval(memberPendingRemoval?.id === member.id ? null : member)}>{t.removeAreaMember}</button>}
+          {memberPendingRemoval?.id === member.id && <div className="member-remove-confirm"><span>{t.confirmRemoveAreaMember.replace('{username}', member.username)}</span><button type="button" onClick={() => setMemberPendingRemoval(null)}>{t.cancel}</button><button type="button" className="danger-action" onClick={() => void removeAreaMember()}>{t.confirm}</button></div>}
+        </div>)}</div>
+        {!membersArea.isOwner && (confirmAreaLeave
+          ? <div className="leave-area-confirm"><span>{t.leaveArea}?</span><button type="button" onClick={() => setConfirmAreaLeave(false)}>{t.cancel}</button><button type="button" className="danger-action" onClick={() => void leaveManagedArea()}>{t.confirm}</button></div>
+          : <button type="button" className="leave-area-button" onClick={() => setConfirmAreaLeave(true)}>{t.leaveArea}</button>)}
+      </section>
     </div>}
   </main>
 }
