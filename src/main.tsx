@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, X } from 'lucide-react'
-import { api, ApiOriginMismatchError, ApiServerUnavailableError, type Account } from './api'
+import { api, ApiOriginMismatchError, ApiServerUnavailableError, type Account, type Area, type AreaInvitation } from './api'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
 import { isDocumentId, readDocuments, readLegacyDocuments, removeLegacyDocument, writeDocuments, type DocumentRecord, type LegacyDocumentRecord } from './documentStore'
 import './style.css'
@@ -36,6 +36,9 @@ function Workspace() {
   const { language, direction, t, setLanguage } = useLanguage()
   const [account, setAccount] = React.useState<Account | null | undefined>(undefined)
   const [documents, setDocuments] = React.useState<DocumentRecord[]>([])
+  const [areas, setAreas] = React.useState<Area[]>([])
+  const [areaInvitations, setAreaInvitations] = React.useState<AreaInvitation[]>([])
+  const [selectedAreaId, setSelectedAreaId] = React.useState<string | null>(null)
   const [legacyDocuments, setLegacyDocuments] = React.useState<LegacyDocumentRecord[]>(readLegacyDocuments)
   const documentIndexRef = React.useRef(documents)
   const [documentSearch, setDocumentSearch] = React.useState('')
@@ -101,7 +104,7 @@ function Workspace() {
   const createDocument = async () => {
     if (!account) return
     try {
-      const { document } = await api.createDocument(t.untitled)
+      const { document } = await api.createDocument(t.untitled, selectedAreaId)
       const current = documentIndexRef.current
       const ordered = [document, ...current].map((entry, order) => ({ ...entry, order })) as DocumentRecord[]
       documentIndexRef.current = ordered
@@ -118,14 +121,15 @@ function Workspace() {
     if (!account) return
     const selected = documentIndexRef.current.find(document => document.id === id)
     if (!selected) return
-    if (selected.access === 'owner') {
+    const canDelete = selected.areaId ? selected.areaOwnerId === account.id : selected.access === 'owner'
+    if (canDelete) {
       const message = selected.sharedWithCount > 0
         ? t.confirmDeleteSharedDocument.replace('{count}', String(selected.sharedWithCount))
         : t.confirmDeleteDocument
       if (!window.confirm(message)) return
     }
     try {
-      if (selected.access === 'owner') await api.deleteDocument(id)
+      if (canDelete) await api.deleteDocument(id)
       else await api.leaveDocument(id)
     } catch (error) {
       setAuthError(error instanceof ApiServerUnavailableError || error instanceof ApiOriginMismatchError ? t.serverRestartRequired : t.authError)
@@ -188,6 +192,7 @@ function Workspace() {
   }
 
   const visibleDocuments = documents
+    .filter(document => !selectedAreaId || document.areaId === selectedAreaId)
     .filter(document => documentFilter === 'all' || document.access === documentFilter)
     .filter(document => document.title.toLocaleLowerCase(language).includes(documentSearch.trim().toLocaleLowerCase(language)))
     .sort((a, b) => a.order - b.order)
@@ -206,12 +211,46 @@ function Workspace() {
     return next
   }, [])
 
+  const refreshAreas = React.useCallback(async () => {
+    const result = await api.listAreas()
+    setAreas(result.areas); setAreaInvitations(result.invitations)
+    setSelectedAreaId(current => current && result.areas.some(area => area.id === current) ? current : null)
+  }, [])
+
+  const createArea = async () => {
+    const name = window.prompt(t.areaNamePrompt)
+    if (!name?.trim()) return
+    try { const { area } = await api.createArea(name); await refreshAreas(); setSelectedAreaId(area.id) }
+    catch { setAuthError(t.authError) }
+  }
+  const inviteAreaMember = async (area: Area) => {
+    const username = window.prompt(t.inviteAreaPrompt)
+    if (!username) return
+    try { await api.inviteToArea(area.id, username); setAuthError('') } catch { setAuthError(t.authError) }
+  }
+  const manageAreaMembers = async (area: Area) => {
+    const roster = area.members.map(member => `${member.username}${member.id === area.ownerId ? ' (owner)' : ''}`).join('\n')
+    const selected = window.prompt(`${t.areaMembers}:\n${roster}\n\n${area.isOwner ? t.removeAreaMember : t.leaveArea}`)
+    if (!selected) return
+    if (!area.isOwner) {
+      if (window.confirm(t.leaveArea + '?')) { try { await api.leaveArea(area.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) } }
+      return
+    }
+    const member = area.members.find(entry => entry.username.toLowerCase() === selected.trim().toLowerCase())
+    if (!member || member.id === area.ownerId) return
+    try { await api.removeAreaMember(area.id, member.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) }
+  }
+  const moveToArea = async (document: DocumentRecord, areaId: string) => {
+    try { await api.moveDocumentToArea(document.id, areaId || null); await refreshDocuments(account!); } catch { setAuthError(t.authError) }
+  }
+
   React.useEffect(() => {
     let active = true
     api.session().then(async ({ user }) => {
       if (!active) return
       setAccount(user)
       if (!user) return
+      await refreshAreas()
       const next = await refreshDocuments(user)
       if (!active) return
       const requestedId = new URLSearchParams(location.search).get('doc')
@@ -225,7 +264,7 @@ function Workspace() {
       }
     }).catch(() => { if (active) setAccount(null) })
     return () => { active = false }
-  }, [refreshDocuments, updateDocumentUrl])
+  }, [refreshDocuments, refreshAreas, updateDocumentUrl])
 
   React.useEffect(() => {
     if (!account) return
@@ -238,9 +277,10 @@ function Workspace() {
           else window.history.replaceState({}, '', location.pathname)
         }
       }).catch(() => undefined)
+      void refreshAreas().catch(() => undefined)
     }, 10000)
     return () => window.clearInterval(refreshTimer)
-  }, [account, docId, refreshDocuments, updateDocumentUrl])
+  }, [account, docId, refreshAreas, refreshDocuments, updateDocumentUrl])
 
   const authenticate = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -250,6 +290,7 @@ function Workspace() {
       const result = await api.authenticate(authMode === 'register' ? '/api/register' : '/api/login', usernameInput, passwordInput)
       setAccount(result.user)
       setPasswordInput('')
+      await refreshAreas()
       const next = await refreshDocuments(result.user)
       const selected = next.find(document => document.id === new URLSearchParams(location.search).get('doc')) ?? next[0]
       if (selected) {
@@ -270,6 +311,7 @@ function Workspace() {
     try { await api.logout() } catch { /* The local session still needs to close. */ }
     setAccount(null)
     setDocuments([])
+    setAreas([]); setAreaInvitations([]); setSelectedAreaId(null)
     documentIndexRef.current = []
     setDocId('')
     window.history.replaceState({}, '', location.pathname)
@@ -531,6 +573,17 @@ function Workspace() {
           <button className={documentFilter === 'owner' ? 'selected' : ''} onClick={() => setDocumentFilter('owner')}>{t.myDocuments}</button>
           <button className={documentFilter === 'shared' ? 'selected' : ''} onClick={() => setDocumentFilter('shared')}>{t.sharedWithMe}</button>
         </div></div>
+        <div className="side-section area-section">
+          <div className="side-label">{t.areas}</div>
+          <button className={`area-choice ${!selectedAreaId ? 'selected' : ''}`} onClick={() => setSelectedAreaId(null)}>{t.allAreas}</button>
+          {areas.map(area => <div className="area-row" key={area.id}>
+            <button className={`area-choice ${selectedAreaId === area.id ? 'selected' : ''}`} onClick={() => setSelectedAreaId(area.id)}>{area.name}</button>
+            <button className="area-manage" title={area.isOwner ? t.inviteToArea : t.areaMembers} onClick={() => area.isOwner ? void inviteAreaMember(area) : void manageAreaMembers(area)}>•••</button>
+            {area.isOwner && <button className="area-manage" title={t.areaMembers} onClick={() => void manageAreaMembers(area)}>{area.members.length}</button>}
+          </div>)}
+          <button className="new-doc area-create" onClick={() => void createArea()}><Plus size={14} /> {t.createArea}</button>
+          {areaInvitations.length > 0 && <div className="area-invites"><span>{t.invitations}</span>{areaInvitations.map(invitation => <button key={invitation.id} onClick={async () => { try { await api.acceptAreaInvitation(invitation.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) } }}>{invitation.name} · {t.acceptInvitation}</button>)}</div>}
+        </div>
         {legacyDocuments.length > 0 && <div className="side-section legacy-documents">
           <div className="side-label">{t.legacyDocuments}</div>
           <div className="legacy-document-list">{legacyDocuments.map(document => <div className="legacy-document" key={document.id}>
@@ -562,7 +615,8 @@ function Workspace() {
                 title={`${t.moveDocumentUp} / ${t.moveDocumentDown}`}
               ><GripVertical size={15} /></button>
               <button className="recent" onClick={() => openDocument(document.id)}><span className="file-badge">Aa</span><span><strong>{document.title}</strong><small>{document.access === 'shared' ? t.sharedDocumentOwner.replace('{owner}', document.ownerUsername) : document.id === docId ? t.updatedNow : new Date(document.updatedAt).toLocaleDateString(language)}</small></span></button>
-              <button className="remove-document" onClick={() => void deleteDocument(document.id)} title={document.access === 'owner' ? t.deleteDocument : t.leaveSharedDocument} aria-label={`${document.access === 'owner' ? t.deleteDocument : t.leaveSharedDocument}: ${document.title}`}><Trash2 size={14} /></button>
+              {((!document.areaId && document.access === 'owner') || (document.areaId && document.areaOwnerId === account.id) || document.access === 'shared') && <button className="remove-document" onClick={() => void deleteDocument(document.id)} title={document.access === 'shared' ? t.leaveSharedDocument : t.deleteDocument} aria-label={`${document.access === 'shared' ? t.leaveSharedDocument : t.deleteDocument}: ${document.title}`}><Trash2 size={14} /></button>}
+              {document.access === 'owner' && areas.length > 0 && <select className="document-area-select" aria-label={t.areaDocuments} value={document.areaId || ''} onChange={event => void moveToArea(document, event.target.value)}><option value="">{t.noArea}</option>{areas.map(area => <option key={area.id} value={area.id}>{area.name}</option>)}</select>}
             </div>)}
             {visibleDocuments.length === 0 && <div className="document-search-empty">{t.noMatchingDocuments}</div>}
           </div>

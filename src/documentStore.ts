@@ -7,6 +7,9 @@ export type DocumentRecord = {
   ownerUsername: string
   access: 'owner' | 'shared'
   sharedWithCount: number
+  areaId?: string | null
+  areaName?: string | null
+  areaOwnerId?: string | null
 }
 
 export type LegacyDocumentRecord = Pick<DocumentRecord, 'id' | 'title' | 'updatedAt'>
@@ -34,7 +37,8 @@ export function readDocuments(userId: string): DocumentRecord[] {
       typeof entry?.id === 'string' && isDocumentId(entry.id) &&
       typeof entry.title === 'string' && typeof entry.updatedAt === 'number' &&
       typeof entry.ownerId === 'string' && typeof entry.ownerUsername === 'string' &&
-      (entry.access === 'owner' || entry.access === 'shared') && typeof entry.sharedWithCount === 'number'
+      (entry.access === 'owner' || entry.access === 'shared' || entry.access === 'area') && typeof entry.sharedWithCount === 'number' &&
+      (entry.areaId === undefined || entry.areaId === null || typeof entry.areaId === 'string')
     )
     if (documents.every(document => typeof document.order === 'number' && Number.isFinite(document.order))) {
       return (documents as DocumentRecord[]).sort((a, b) => a.order - b.order)

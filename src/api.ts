@@ -6,10 +6,16 @@ export type SharedDocument = {
   updatedAt: number
   ownerId: string
   ownerUsername: string
-  access: 'owner' | 'shared'
+  access: 'owner' | 'shared' | 'area'
   sharedWithCount: number
   order?: number
+  areaId?: string | null
+  areaName?: string | null
+  areaOwnerId?: string | null
 }
+
+export type Area = { id: string; name: string; ownerId: string; ownerUsername: string; members: { id: string; username: string }[]; isOwner: boolean }
+export type AreaInvitation = { id: string; name: string; ownerUsername: string }
 
 export class ApiServerUnavailableError extends Error {}
 export class ApiOriginMismatchError extends Error {}
@@ -33,10 +39,17 @@ export const api = {
     request<{ user: Account }>(path, { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: true }>('/api/logout', { method: 'POST' }),
   listDocuments: () => request<{ documents: SharedDocument[] }>('/api/documents'),
-  createDocument: (title: string) => request<{ document: SharedDocument }>('/api/documents', { method: 'POST', body: JSON.stringify({ title }) }),
+  createDocument: (title: string, areaId?: string | null) => request<{ document: SharedDocument }>('/api/documents', { method: 'POST', body: JSON.stringify({ title, areaId }) }),
   claimLegacyDocument: (id: string, title: string) => request<{ document: SharedDocument }>(`/api/documents/${encodeURIComponent(id)}/claim`, { method: 'POST', body: JSON.stringify({ title }) }),
   renameDocument: (id: string, title: string) => request<{ ok: true }>(`/api/documents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   shareDocument: (id: string, username: string) => request<{ document: { id: string; username: string } }>(`/api/documents/${encodeURIComponent(id)}/share`, { method: 'POST', body: JSON.stringify({ username }) }),
   leaveDocument: (id: string) => request<{ ok: true }>(`/api/documents/${encodeURIComponent(id)}/leave`, { method: 'DELETE' }),
   deleteDocument: (id: string) => request<{ ok: true }>(`/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  moveDocumentToArea: (id: string, areaId: string | null) => request<{ ok: true }>(`/api/documents/${encodeURIComponent(id)}/area`, { method: 'PATCH', body: JSON.stringify({ areaId }) }),
+  listAreas: () => request<{ areas: Area[]; invitations: AreaInvitation[] }>('/api/areas'),
+  createArea: (name: string) => request<{ area: Area }>('/api/areas', { method: 'POST', body: JSON.stringify({ name }) }),
+  inviteToArea: (id: string, username: string) => request<{ ok: true }>(`/api/areas/${encodeURIComponent(id)}/invite`, { method: 'POST', body: JSON.stringify({ username }) }),
+  removeAreaMember: (id: string, userId: string) => request<{ ok: true }>(`/api/areas/${encodeURIComponent(id)}/members`, { method: 'DELETE', body: JSON.stringify({ userId }) }),
+  leaveArea: (id: string) => request<{ ok: true }>(`/api/areas/${encodeURIComponent(id)}/leave`, { method: 'DELETE' }),
+  acceptAreaInvitation: (id: string) => request<{ area: Area }>(`/api/areas/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
 }

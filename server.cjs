@@ -38,7 +38,7 @@ function loadData() {
   try {
     contents = fs.readFileSync(dataPath, 'utf8')
   } catch (error) {
-    if (error.code === 'ENOENT') return { users: [], documents: [] }
+    if (error.code === 'ENOENT') return { users: [], documents: [], areas: [] }
     throw error
   }
   const parsed = JSON.parse(contents)
@@ -46,6 +46,7 @@ function loadData() {
   return {
     users: parsed.users.filter(user => typeof user.id === 'string' && typeof user.username === 'string' && typeof user.salt === 'string' && typeof user.passwordHash === 'string'),
     documents: parsed.documents.filter(document => typeof document.id === 'string' && typeof document.ownerId === 'string' && Array.isArray(document.sharedWith)),
+    areas: Array.isArray(parsed.areas) ? parsed.areas.filter(area => typeof area.id === 'string' && typeof area.ownerId === 'string' && Array.isArray(area.members) && Array.isArray(area.invitations)) : [],
   }
 }
 
@@ -116,15 +117,18 @@ function publicUser(user) {
 
 function ownedOrSharedDocuments(user) {
   return data.documents
-    .filter(document => !document.deleting && (document.ownerId === user.id || document.sharedWith?.includes(user.id)))
+    .filter(document => !document.deleting && (document.ownerId === user.id || document.sharedWith?.includes(user.id) || (document.areaId && findArea(document.areaId)?.members.includes(user.id))))
     .map(document => ({
       id: document.id,
       title: document.title,
       updatedAt: document.updatedAt,
       ownerId: document.ownerId,
       ownerUsername: data.users.find(entry => entry.id === document.ownerId)?.username ?? 'Unknown',
-      access: document.ownerId === user.id ? 'owner' : 'shared',
-      sharedWithCount: document.sharedWith.length,
+      access: document.ownerId === user.id ? 'owner' : document.sharedWith?.includes(user.id) ? 'shared' : 'area',
+      sharedWithCount: new Set([...(document.sharedWith || []), ...(document.areaId ? (findArea(document.areaId)?.members || []) : [])].filter(id => id !== document.ownerId)).size,
+      areaId: document.areaId || null,
+      areaName: document.areaId ? findArea(document.areaId)?.name || null : null,
+      areaOwnerId: document.areaId ? findArea(document.areaId)?.ownerId || null : null,
     }))
 }
 
@@ -132,8 +136,12 @@ function findDocument(id) {
   return data.documents.find(document => document.id === id)
 }
 
+function findArea(id) { return data.areas.find(area => area.id === id) }
+function canAccessArea(area, user) { return area && area.members.includes(user.id) }
+function publicArea(area, viewerId) { return { id: area.id, name: area.name, ownerId: area.ownerId, ownerUsername: data.users.find(user => user.id === area.ownerId)?.username || 'Unknown', members: area.members.map(id => ({ id, username: data.users.find(user => user.id === id)?.username || 'Unknown' })), isOwner: area.ownerId === viewerId } }
+
 function hasAccess(document, user) {
-  return document && !document.deleting && (document.ownerId === user.id || document.sharedWith?.includes(user.id))
+  return document && !document.deleting && (document.ownerId === user.id || document.sharedWith?.includes(user.id) || (document.areaId && canAccessArea(findArea(document.areaId), user)))
 }
 
 function disconnectUser(userId, documentId) {
@@ -195,14 +203,66 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { documents: ownedOrSharedDocuments(user) })
   }
 
+  if (route === '/api/areas' && request.method === 'GET') {
+    const areas = data.areas.filter(area => canAccessArea(area, user)).map(area => publicArea(area, user.id))
+    const invitations = data.areas.filter(area => area.invitations.includes(user.id)).map(area => ({ id: area.id, name: area.name, ownerUsername: data.users.find(entry => entry.id === area.ownerId)?.username || 'Unknown' }))
+    return sendJson(response, 200, { areas, invitations })
+  }
+  if (route === '/api/areas' && request.method === 'POST') {
+    const body = await readJson(request)
+    const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : ''
+    if (!name) return sendJson(response, 400, { error: 'Enter an area name.' })
+    const area = { id: crypto.randomUUID(), name, ownerId: user.id, members: [user.id], invitations: [] }
+    data.areas.push(area); persistData()
+    return sendJson(response, 201, { area: publicArea(area, user.id) })
+  }
+  const areaRoute = route.match(/^\/api\/areas\/([a-zA-Z0-9_-]{1,100})(?:\/(invite|members|leave|accept))?$/)
+  if (areaRoute) {
+    const [, id, action] = areaRoute
+    const area = findArea(id)
+    if (!area) return sendJson(response, 404, { error: 'Area not found.' })
+    if (action === 'accept' && request.method === 'POST') {
+      if (!area.invitations.includes(user.id)) return sendJson(response, 403, { error: 'No invitation to this area.' })
+      area.invitations = area.invitations.filter(memberId => memberId !== user.id)
+      if (!area.members.includes(user.id)) area.members.push(user.id)
+      persistData(); return sendJson(response, 200, { area: publicArea(area, user.id) })
+    }
+    if (action === 'invite' && request.method === 'POST') {
+      if (area.ownerId !== user.id) return sendJson(response, 403, { error: 'Only the area owner can invite members.' })
+      const body = await readJson(request); const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
+      const recipient = data.users.find(entry => entry.username === username)
+      if (!recipient) return sendJson(response, 404, { error: 'No account has that username.' })
+      if (recipient.id === user.id || area.members.includes(recipient.id)) return sendJson(response, 400, { error: 'That account is already an area member.' })
+      if (!area.invitations.includes(recipient.id)) area.invitations.push(recipient.id)
+      persistData(); return sendJson(response, 200, { ok: true })
+    }
+    if (action === 'members' && request.method === 'DELETE') {
+      if (area.ownerId !== user.id) return sendJson(response, 403, { error: 'Only the area owner can remove members.' })
+      const body = await readJson(request); const memberId = typeof body.userId === 'string' ? body.userId : ''
+      if (memberId === area.ownerId) return sendJson(response, 400, { error: 'Area ownership cannot be transferred or removed.' })
+      area.members = area.members.filter(entry => entry !== memberId); area.invitations = area.invitations.filter(entry => entry !== memberId)
+      disconnectUser(memberId)
+      persistData(); return sendJson(response, 200, { ok: true })
+    }
+    if (action === 'leave' && request.method === 'DELETE') {
+      if (!canAccessArea(area, user)) return sendJson(response, 403, { error: 'You are not a member of this area.' })
+      if (area.ownerId === user.id) return sendJson(response, 400, { error: 'The area owner cannot leave the area.' })
+      area.members = area.members.filter(entry => entry !== user.id); persistData(); disconnectUser(user.id)
+      return sendJson(response, 200, { ok: true })
+    }
+    if (!action && request.method === 'GET') return canAccessArea(area, user) ? sendJson(response, 200, { area: publicArea(area, user.id) }) : sendJson(response, 404, { error: 'Area not found.' })
+  }
+
   if (request.method === 'POST' && route === '/api/documents') {
     const body = await readJson(request)
     const id = crypto.randomUUID()
     const title = typeof body.title === 'string' ? body.title.slice(0, 200) : 'Untitled document'
-    const document = { id, title, updatedAt: Date.now(), ownerId: user.id, sharedWith: [] }
+    const areaId = typeof body.areaId === 'string' ? body.areaId : null
+    if (areaId && !canAccessArea(findArea(areaId), user)) return sendJson(response, 403, { error: 'Join this area before creating a document in it.' })
+    const document = { id, title, updatedAt: Date.now(), ownerId: user.id, sharedWith: [], areaId }
     data.documents.push(document)
     persistData()
-    return sendJson(response, 201, { document: { ...document, access: 'owner', ownerUsername: user.username, sharedWithCount: 0 } })
+    return sendJson(response, 201, { document: { ...document, access: 'owner', ownerUsername: user.username, sharedWithCount: 0, areaName: areaId ? findArea(areaId).name : null, areaOwnerId: areaId ? findArea(areaId).ownerId : null } })
   }
 
   const claimRoute = route.match(/^\/api\/documents\/([a-zA-Z0-9_-]{1,100})\/claim$/)
@@ -222,11 +282,20 @@ async function handleApi(request, response, url) {
     return sendJson(response, 201, { document: { ...document, access: 'owner', ownerUsername: user.username, sharedWithCount: 0 } })
   }
 
-  const documentRoute = route.match(/^\/api\/documents\/([a-zA-Z0-9_-]{1,100})(?:\/(share|leave))?$/)
+  const documentRoute = route.match(/^\/api\/documents\/([a-zA-Z0-9_-]{1,100})(?:\/(share|leave|area))?$/)
   if (documentRoute) {
     const [, id, action] = documentRoute
     const document = findDocument(id)
     if (!document || !hasAccess(document, user)) return sendJson(response, 404, { error: 'Document not found.' })
+
+    if (action === 'area' && request.method === 'PATCH') {
+      if (document.ownerId !== user.id) return sendJson(response, 403, { error: 'Only the document owner can move it into an area.' })
+      const body = await readJson(request)
+      const areaId = typeof body.areaId === 'string' && body.areaId ? body.areaId : null
+      if (areaId && !canAccessArea(findArea(areaId), user)) return sendJson(response, 403, { error: 'Join this area before moving a document into it.' })
+      document.areaId = areaId; document.updatedAt = Date.now(); persistData()
+      return sendJson(response, 200, { ok: true })
+    }
 
     if (action === 'share' && request.method === 'POST') {
       if (document.ownerId !== user.id) return sendJson(response, 403, { error: 'Only the owner can share this document.' })
@@ -259,7 +328,8 @@ async function handleApi(request, response, url) {
     }
 
     if (!action && request.method === 'DELETE') {
-      if (document.ownerId !== user.id) return sendJson(response, 403, { error: 'Only the owner can permanently delete this document.' })
+      const deletionOwnerId = document.areaId ? findArea(document.areaId)?.ownerId : document.ownerId
+      if (deletionOwnerId !== user.id) return sendJson(response, 403, { error: 'Only the document or area owner can permanently delete this document.' })
       deletingDocuments.add(id)
       document.deleting = true
       persistData()
