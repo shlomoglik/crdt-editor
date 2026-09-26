@@ -15,6 +15,7 @@ const RichTextEditor = React.lazy(async () => {
 
 type Person = { name: string; color: string }
 type Stroke = { color: string; points: { x: number; y: number }[] }
+type DialogState = { mode: 'input' | 'confirm' | 'message'; message: string; initialValue?: string; resolve: (value: string | boolean | null) => void }
 const palette = ['#6757e8', '#12a889', '#eb8453', '#df5b8c', '#4387dc', '#cf9e2e']
 const identity = (() => {
   const key = 'merhav-profile'
@@ -50,6 +51,8 @@ function Workspace() {
   const [passwordInput, setPasswordInput] = React.useState('')
   const [authError, setAuthError] = React.useState('')
   const [authBusy, setAuthBusy] = React.useState(false)
+  const [dialog, setDialog] = React.useState<DialogState | null>(null)
+  const [dialogValue, setDialogValue] = React.useState('')
   const [docId, setDocId] = React.useState(() => {
     const requestedId = new URLSearchParams(location.search).get('doc')
     return isDocumentId(requestedId) ? requestedId : ''
@@ -73,6 +76,14 @@ function Workspace() {
   const guestName = account?.username ?? `${t.guestName} ${identity.suffix}`
   const languageLabels = React.useRef({ guestName, untitled: t.untitled })
   languageLabels.current = { guestName, untitled: t.untitled }
+  const showDialog = (mode: DialogState['mode'], message: string, initialValue = '') => new Promise<string | boolean | null>(resolve => {
+    setDialogValue(initialValue)
+    setDialog({ mode, message, initialValue, resolve })
+  })
+  const finishDialog = (value: string | boolean | null) => {
+    dialog?.resolve(value)
+    setDialog(null)
+  }
 
 
   const saveDocumentRecord = React.useCallback((id: string, nextTitle: string) => {
@@ -126,7 +137,7 @@ function Workspace() {
       const message = selected.sharedWithCount > 0
         ? t.confirmDeleteSharedDocument.replace('{count}', String(selected.sharedWithCount))
         : t.confirmDeleteDocument
-      if (!window.confirm(message)) return
+      if (!await showDialog('confirm', message)) return
     }
     try {
       if (canDelete) await api.deleteDocument(id)
@@ -218,22 +229,23 @@ function Workspace() {
   }, [])
 
   const createArea = async () => {
-    const name = window.prompt(t.areaNamePrompt)
+    const name = await showDialog('input', t.areaNamePrompt)
+    if (typeof name !== 'string') return
     if (!name?.trim()) return
     try { const { area } = await api.createArea(name); await refreshAreas(); setSelectedAreaId(area.id) }
     catch { setAuthError(t.authError) }
   }
   const inviteAreaMember = async (area: Area) => {
-    const username = window.prompt(t.inviteAreaPrompt)
-    if (!username) return
+    const username = await showDialog('input', t.inviteAreaPrompt)
+    if (typeof username !== 'string' || !username.trim()) return
     try { await api.inviteToArea(area.id, username); setAuthError('') } catch { setAuthError(t.authError) }
   }
   const manageAreaMembers = async (area: Area) => {
     const roster = area.members.map(member => `${member.username}${member.id === area.ownerId ? ' (owner)' : ''}`).join('\n')
-    const selected = window.prompt(`${t.areaMembers}:\n${roster}\n\n${area.isOwner ? t.removeAreaMember : t.leaveArea}`)
-    if (!selected) return
+    const selected = await showDialog('input', `${t.areaMembers}:\n${roster}\n\n${area.isOwner ? t.removeAreaMember : t.leaveArea}`)
+    if (typeof selected !== 'string' || !selected.trim()) return
     if (!area.isOwner) {
-      if (window.confirm(t.leaveArea + '?')) { try { await api.leaveArea(area.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) } }
+      if (await showDialog('confirm', t.leaveArea + '?')) { try { await api.leaveArea(area.id); await refreshAreas(); await refreshDocuments(account!) } catch { setAuthError(t.authError) } }
       return
     }
     const member = area.members.find(entry => entry.username.toLowerCase() === selected.trim().toLowerCase())
@@ -320,7 +332,7 @@ function Workspace() {
   const claimLegacyDocument = async (document: LegacyDocumentRecord) => {
     if (!account) return
     const message = t.confirmClaimLegacyDocument.replace('{title}', document.title)
-    if (!window.confirm(message)) return
+    if (!await showDialog('confirm', message)) return
     try {
       await api.claimLegacyDocument(document.id, document.title)
       removeLegacyDocument(document.id)
@@ -512,12 +524,12 @@ function Workspace() {
   const share = async () => {
     if (!account || !docId) return
     try {
-      const username = window.prompt(t.sharePrompt)
-      if (!username) return
+      const username = await showDialog('input', t.sharePrompt)
+      if (typeof username !== 'string' || !username.trim()) return
       await api.shareDocument(docId, username)
       const url = new URL(location.href)
       url.searchParams.set('doc', docId)
-      try { await navigator.clipboard.writeText(url.toString()) } catch { window.prompt(t.copyPrompt, url.toString()) }
+      try { await navigator.clipboard.writeText(url.toString()) } catch { await showDialog('message', `${t.copyPrompt}\n${url.toString()}`) }
       await refreshDocuments(account)
       setAuthError('')
       setCopied(true)
@@ -556,7 +568,7 @@ function Workspace() {
   return <main className="app-shell" dir={direction}>
     <header className="topbar">
       <a className="brand" href="#" aria-label={t.brand}><span className="brand-mark"><Sparkles size={18} /></span><span>{t.brand}</span></a>
-      <div className="breadcrumb"><span>{documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{title}<span className="edit-dot" /></button>}</div>
+      <div className="breadcrumb"><span>{areas.find(area => area.id === selectedAreaId)?.name ?? (documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe)}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{title}<span className="edit-dot" /></button>}</div>
       <div className="top-actions">
         <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
@@ -644,6 +656,16 @@ function Workspace() {
         </> : <div className="empty-workspace"><p>{t.noDocumentSelected}</p><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.createFirstDocument}</button></div>}
       </section>
     </section>
+    {dialog && <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) finishDialog(null) }}>
+      <form className="app-dialog" role="dialog" aria-modal="true" aria-label={dialog.message.split('\n')[0]} onSubmit={event => { event.preventDefault(); finishDialog(dialog.mode === 'confirm' ? true : dialog.mode === 'input' ? dialogValue : true) }}>
+        <p className="dialog-message">{dialog.message}</p>
+        {dialog.mode === 'input' && <input autoFocus value={dialogValue} onChange={event => setDialogValue(event.target.value)} />}
+        <div className="dialog-actions">
+          {dialog.mode !== 'message' && <button type="button" className="dialog-cancel" onClick={() => finishDialog(null)}>{t.cancel}</button>}
+          <button type="submit" className="dialog-submit">{dialog.mode === 'confirm' ? t.confirm : t.ok}</button>
+        </div>
+      </form>
+    </div>}
   </main>
 }
 

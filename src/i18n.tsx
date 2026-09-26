@@ -91,6 +91,7 @@ export const languageConfig = {
     english: 'English',
     hebrew: 'Hebrew',
     areas: 'Areas', createArea: 'Create area', areaNamePrompt: 'Enter an area name:', areaMembers: 'Members', inviteToArea: 'Invite by username', inviteAreaPrompt: 'Enter the username to invite:', leaveArea: 'Leave area', removeAreaMember: 'Remove member', areaDocuments: 'Area documents', allAreas: 'All documents', noArea: 'Personal documents', areaAccess: 'Area: {name}', acceptInvitation: 'Accept', invitations: 'Invitations', invitedBy: 'Invited by {owner}', areaOwnerOnlyDelete: 'Only the area owner can permanently delete this document.',
+    confirm: 'Confirm', cancel: 'Cancel', ok: 'OK',
   },
   he: {
     direction: 'rtl',
@@ -180,6 +181,7 @@ export const languageConfig = {
     english: 'אנגלית',
     hebrew: 'עברית',
     areas: 'אזורים', createArea: 'יצירת אזור', areaNamePrompt: 'הזינו שם לאזור:', areaMembers: 'חברים', inviteToArea: 'הזמנה לפי שם משתמש', inviteAreaPrompt: 'הזינו שם משתמש להזמנה:', leaveArea: 'יציאה מהאזור', removeAreaMember: 'הסרת חבר', areaDocuments: 'מסמכי האזור', allAreas: 'כל המסמכים', noArea: 'מסמכים אישיים', areaAccess: 'אזור: {name}', acceptInvitation: 'אישור', invitations: 'הזמנות', invitedBy: 'הוזמנתם על ידי {owner}', areaOwnerOnlyDelete: 'רק בעל האזור יכול למחוק את המסמך לצמיתות.',
+    confirm: 'אישור', cancel: 'ביטול', ok: 'סגירה',
   },
 } as const
 
