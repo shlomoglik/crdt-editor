@@ -2,7 +2,8 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, History, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, X } from 'lucide-react'
+import { VersionHistory } from './VersionHistory'
 import { api, ApiOriginMismatchError, ApiServerUnavailableError, type Account, type Area, type AreaInvitation } from './api'
 import { LanguageProvider, useLanguage, type Language } from './i18n'
 import { isDocumentId, readDocuments, readLegacyDocuments, removeLegacyDocument, writeDocuments, type DocumentRecord, type LegacyDocumentRecord } from './documentStore'
@@ -71,6 +72,8 @@ function Workspace() {
   const [connected, setConnected] = React.useState(false)
   const [synced, setSynced] = React.useState(false)
   const [view, setView] = React.useState<'text' | 'board'>('text')
+  const [historyOpen, setHistoryOpen] = React.useState(false)
+  const [editorRevision, setEditorRevision] = React.useState(0)
   const [title, setTitle] = React.useState(t.untitled)
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
@@ -369,6 +372,16 @@ function Workspace() {
   }, [docId, updateDocumentUrl])
 
   React.useEffect(() => {
+    setHistoryOpen(false)
+  }, [docId])
+
+  React.useEffect(() => {
+    if (!account || !docId) return
+    // The server also captures on socket close, including browser navigation.
+    return () => { void api.saveVersion(docId).catch(() => undefined) }
+  }, [account?.id, docId, view])
+
+  React.useEffect(() => {
     const onPopState = () => {
       const requestedId = new URLSearchParams(location.search).get('doc')
       if (isDocumentId(requestedId) && documentIndexRef.current.some(document => document.id === requestedId)) setDocId(requestedId)
@@ -586,6 +599,7 @@ function Workspace() {
       <div className="top-actions">
         <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
+        <button className="icon-btn" disabled={!docId || !synced} onClick={() => setHistoryOpen(value => !value)} title={t.versionHistory} aria-label={t.versionHistory} aria-expanded={historyOpen}><History size={17} /></button>
         <button className="icon-btn" onClick={exportFile} title={t.download}><ArrowDownToLine size={17} /></button>
         <button className="share-btn" onClick={share}>{copied ? <Check size={16} /> : <Share2 size={16} />}<span>{copied ? t.copied : t.share}</span></button>
         <button className="account-button" onClick={signOut} title={t.signOut}><div className="profile" style={{ background: identity.color }}>{guestName.slice(0, 1)}</div></button>
@@ -659,7 +673,7 @@ function Workspace() {
           {view === 'text' ? <>
             <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.documentTitle} disabled={!synced} />
             {editorSession?.id === docId && synced
-              ? <React.Suspense fallback={<div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}><RichTextEditor document={editorSession.document} provider={editorSession.provider} guestName={guestName} color={identity.color} placeholder={t.placeholder} onTextChange={onTextChange} /></React.Suspense>
+              ? <React.Suspense fallback={<div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}><RichTextEditor key={editorRevision} document={editorSession.document} provider={editorSession.provider} guestName={guestName} color={identity.color} placeholder={t.placeholder} onTextChange={onTextChange} /></React.Suspense>
               : <div className="rich-editor-loading" aria-live="polite">{t.editorLoading}</div>}
           </> : <>
             <input className="doc-heading" value={title} onChange={event => changeTitle(event.target.value)} aria-label={t.boardTitle} disabled={!synced} />
@@ -671,6 +685,7 @@ function Workspace() {
         </div></div>
         </> : <div className="empty-workspace"><p>{t.noDocumentSelected}</p><button className="new-doc" onClick={createDocument}><Plus size={16} /> {t.createFirstDocument}</button></div>}
       </section>
+      {historyOpen && docId && <VersionHistory key={docId} documentId={docId} ready={synced && connected} onClose={() => setHistoryOpen(false)} showDialog={showDialog} onRestore={() => setEditorRevision(value => value + 1)} onBranch={async id => { await refreshDocuments(account); setSelectedAreaId(null); setDocumentFilter('all'); setDocumentSearch(''); openDocument(id) }} />}
     </section>
     {dialog && <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) finishDialog(null) }}>
       <form className="app-dialog" role="dialog" aria-modal="true" aria-label={dialog.message.split('\n')[0]} onSubmit={event => { event.preventDefault(); finishDialog(dialog.mode === 'confirm' ? true : dialog.mode === 'input' ? dialogValue : true) }}>

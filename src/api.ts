@@ -16,6 +16,8 @@ export type SharedDocument = {
 
 export type Area = { id: string; name: string; ownerId: string; ownerUsername: string; members: { id: string; username: string }[]; isOwner: boolean }
 export type AreaInvitation = { id: string; name: string; ownerUsername: string }
+export type DocumentVersion = { id: string; createdAt: number; name: string | null; title: string; reason: string; authorId: string | null }
+export type VersionContent = { title: string; text: string; structure: string; board: { color: string; points: { x: number; y: number }[] }[] }
 
 export class ApiServerUnavailableError extends Error {}
 export class ApiOriginMismatchError extends Error {}
@@ -34,6 +36,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  versionContent: (id: string, versionId: string) => request<{ content: VersionContent }>(`/api/documents/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`),
+  listVersions: (id: string) => request<{ versions: DocumentVersion[] }>(`/api/documents/${encodeURIComponent(id)}/versions`),
+  saveVersion: (id: string, name?: string) => request<{ version: DocumentVersion }>(`/api/documents/${encodeURIComponent(id)}/versions`, { method: 'POST', body: JSON.stringify({ name }), keepalive: true }),
+  nameVersion: (id: string, versionId: string, name: string) => request<{ version: DocumentVersion }>(`/api/documents/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  restoreVersion: (id: string, versionId: string) => request<{ ok: true }>(`/api/documents/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`, { method: 'POST' }),
+  branchVersion: (id: string, versionId: string, title: string) => request<{ document: SharedDocument }>(`/api/documents/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/branch`, { method: 'POST', body: JSON.stringify({ title }) }),
   session: () => request<{ user: Account | null }>('/api/session'),
   authenticate: (path: '/api/register' | '/api/login', username: string, password: string) =>
     request<{ user: Account }>(path, { method: 'POST', body: JSON.stringify({ username, password }) }),

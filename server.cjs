@@ -4,7 +4,9 @@ const http = require('node:http')
 const path = require('node:path')
 const { URL } = require('node:url')
 const WebSocket = require('ws')
-const { setupWSConnection, getPersistence, docs } = require('y-websocket/bin/utils')
+const { setupWSConnection, getPersistence, getYDoc, docs } = require('y-websocket/bin/utils')
+const Y = require('yjs')
+const { copyContent, createHistory, decodeVersion, publicVersion, versionContent } = require('./versionHistory.cjs')
 
 const host = process.env.HOST || 'localhost'
 const port = Number(process.env.PORT || 1234)
@@ -15,6 +17,21 @@ const sessionCookie = 'merhav_session'
 const sessions = new Map()
 const deletingDocuments = new Set()
 const pendingPersistenceBinds = new Map()
+const roomHistories = new WeakMap()
+
+async function historyRoom(id) {
+  const room = getYDoc(id)
+  if (!roomHistories.has(room)) {
+    const ready = (async () => {
+      await pendingPersistenceBinds.get(id)
+      const document = findDocument(id)
+      if (!document || document.deleting) throw new Error('Document is unavailable.')
+      return createHistory(document, room, persistData)
+    })()
+    roomHistories.set(room, ready)
+  }
+  return { room, history: await roomHistories.get(room) }
+}
 
 const configuredPersistence = getPersistence()
 if (configuredPersistence) {
@@ -282,6 +299,65 @@ async function handleApi(request, response, url) {
     return sendJson(response, 201, { document: { ...document, access: 'owner', ownerUsername: user.username, sharedWithCount: 0 } })
   }
 
+  const versionRoute = route.match(/^\/api\/documents\/([a-zA-Z0-9_-]{1,100})\/versions(?:\/([a-zA-Z0-9_-]{1,100})(?:\/(restore|branch))?)?$/)
+  if (versionRoute) {
+    const [, id, versionId, action] = versionRoute
+    const document = findDocument(id)
+    if (!hasAccess(document, user)) return sendJson(response, 404, { error: 'Document not found.' })
+    const { room, history } = await historyRoom(id)
+    if (!hasAccess(document, user)) return sendJson(response, 404, { error: 'Document not found.' })
+    if (!versionId && request.method === 'GET') {
+      return sendJson(response, 200, { versions: [...document.versions].reverse().map(publicVersion) })
+    }
+    if (!versionId && request.method === 'POST') {
+      const body = await readJson(request)
+      const name = typeof body.name === 'string' ? body.name.trim().slice(0, 200) : null
+      const version = history.capture(name || null, name ? 'named' : 'automatic', user.id)
+      return sendJson(response, 200, { version: publicVersion(version) })
+    }
+    if (versionId === 'current' && !action && request.method === 'GET') {
+      return sendJson(response, 200, { content: versionContent(room, document.title) })
+    }
+    const version = document.versions.find(entry => entry.id === versionId)
+    if (!version) return sendJson(response, 404, { error: 'Version not found.' })
+    if (!action && request.method === 'GET') {
+      const snapshot = decodeVersion(version)
+      try { return sendJson(response, 200, { content: versionContent(snapshot, version.title) }) }
+      finally { snapshot.destroy() }
+    }
+    if (!action && request.method === 'PATCH') {
+      const body = await readJson(request)
+      if (typeof body.name !== 'string' || !body.name.trim()) return sendJson(response, 400, { error: 'Enter a version name.' })
+      version.name = body.name.trim().slice(0, 200)
+      persistData()
+      return sendJson(response, 200, { version: publicVersion(version) })
+    }
+    if (action === 'restore' && request.method === 'POST') {
+      history.capture(null, 'before-restore', user.id)
+      const snapshot = decodeVersion(version)
+      try { copyContent(snapshot, room) } finally { snapshot.destroy() }
+      history.capture(null, 'restored', user.id)
+      return sendJson(response, 200, { ok: true })
+    }
+    if (action === 'branch' && request.method === 'POST') {
+      const body = await readJson(request)
+      const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : version.title
+      const snapshot = decodeVersion(version)
+      const branchId = crypto.randomUUID()
+      snapshot.getMap('metadata').set('title', title)
+      try {
+        const persistence = getPersistence()
+        if (persistence?.provider) await persistence.provider.storeUpdate(branchId, Y.encodeStateAsUpdate(snapshot))
+        else copyContent(snapshot, getYDoc(branchId))
+      } finally { snapshot.destroy() }
+      // A branch is a new personal document; access and area membership are not copied.
+      const branch = { id: branchId, title, updatedAt: Date.now(), ownerId: user.id, sharedWith: [], areaId: null, branchedFrom: { documentId: id, versionId } }
+      data.documents.push(branch)
+      persistData()
+      return sendJson(response, 201, { document: ownedOrSharedDocuments(user).find(entry => entry.id === branchId) })
+    }
+  }
+
   const documentRoute = route.match(/^\/api\/documents\/([a-zA-Z0-9_-]{1,100})(?:\/(share|leave|area))?$/)
   if (documentRoute) {
     const [, id, action] = documentRoute
@@ -368,9 +444,19 @@ const server = http.createServer((request, response) => {
 })
 
 const websocketServer = new WebSocket.Server({ noServer: true })
-websocketServer.on('connection', (connection, request, documentId, userId) => {
+websocketServer.on('connection', async (connection, request, documentId, userId) => {
   connection.merhavUserId = userId
-  setupWSConnection(connection, request, { docName: documentId })
+  try {
+    const { history } = await historyRoom(documentId)
+    if (connection.readyState !== WebSocket.OPEN || currentUser(request)?.id !== userId || !hasAccess(findDocument(documentId), data.users.find(user => user.id === userId))) return connection.close(4001, 'Access changed')
+    setupWSConnection(connection, request, { docName: documentId })
+    connection.on('close', () => {
+      if (!findDocument(documentId)?.deleting) history.capture()
+    })
+  } catch (error) {
+    console.error(error)
+    connection.close(1011, 'Could not load document')
+  }
 })
 
 server.on('upgrade', (request, socket, head) => {
@@ -384,9 +470,13 @@ server.on('upgrade', (request, socket, head) => {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
     return socket.destroy()
   }
-  websocketServer.handleUpgrade(request, socket, head, connection => {
-    websocketServer.emit('connection', connection, request, documentId, user.id)
-  })
+  // Load persistence and attach history before accepting client sync messages.
+  historyRoom(documentId).then(() => {
+    if (currentUser(request)?.id !== user.id || !hasAccess(findDocument(documentId), user)) return socket.destroy()
+    websocketServer.handleUpgrade(request, socket, head, connection => {
+      websocketServer.emit('connection', connection, request, documentId, user.id)
+    })
+  }).catch(error => { console.error(error); socket.destroy() })
 })
 
 async function recoverInterruptedDeletions() {
@@ -401,7 +491,7 @@ async function recoverInterruptedDeletions() {
 }
 
 recoverInterruptedDeletions().then(() => {
-  server.listen(port, host, () => console.log(`Merhav server listening at http://${host}:${port}`))
+  server.listen(port, host, () => console.log(`Merhav server listening at http://${host}:${server.address().port}`))
 }).catch(error => {
   console.error('Could not finish interrupted document deletion.', error)
   process.exitCode = 1
