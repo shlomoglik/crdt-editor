@@ -20,7 +20,9 @@ export function VersionHistory({ documentId, ready, onClose, onRestore, onBranch
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
   const [name, setName] = React.useState('')
-  const [comparison, setComparison] = React.useState<{ version: DocumentVersion; previous?: DocumentVersion } | null>(null)
+  const [comparisonId, setComparisonId] = React.useState<string | null>(null)
+  const comparisonIndex = versions.findIndex(version => version.id === comparisonId)
+  const comparisonVersion = versions[comparisonIndex]
   const refresh = async () => setVersions((await api.listVersions(documentId)).versions)
 
   React.useEffect(() => {
@@ -58,12 +60,12 @@ export function VersionHistory({ documentId, ready, onClose, onRestore, onBranch
     </form>
     {error && <p role="alert" className="auth-error">{error}</p>}
     {loading ? <p role="status">{t.historyLoading}</p> : <ol className="history-list">
-      {versions.map((version, index) => <li key={version.id}>
+      {versions.map(version => <li key={version.id}>
         <strong>{version.name || t.automaticVersion}</strong>
         <time dateTime={new Date(version.createdAt).toISOString()}>{new Date(version.createdAt).toLocaleString(language)}</time>
         <span className="history-version-title">{version.title}</span>
         <div className="history-actions">
-          <button disabled={busy} onClick={() => setComparison({ version, previous: versions[index + 1] })}>{t.compareVersions}</button>
+          <button disabled={busy} onClick={() => setComparisonId(version.id)}>{t.compareVersions}</button>
           <button disabled={busy || !ready} onClick={() => void run(async () => {
             const value = await showDialog('input', t.versionName, version.name ?? '')
             if (typeof value === 'string' && value.trim()) await api.nameVersion(documentId, version.id, value)
@@ -83,6 +85,6 @@ export function VersionHistory({ documentId, ready, onClose, onRestore, onBranch
       </li>)}
       {versions.length === 0 && <li>{t.noVersions}</li>}
     </ol>}
-    {comparison && <VersionDiff documentId={documentId} version={comparison.version} previous={comparison.previous} onClose={() => setComparison(null)} />}
+    {comparisonVersion && <VersionDiff documentId={documentId} version={comparisonVersion} previous={versions[comparisonIndex + 1]} next={versions[comparisonIndex - 1]} position={versions.length - comparisonIndex} total={versions.length} onNavigate={setComparisonId} onClose={() => setComparisonId(null)} />}
   </aside>
 }

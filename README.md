@@ -34,6 +34,10 @@ also shows changes from the previous saved version to the selected version.
 The viewer uses jsdiff for text additions and removals, shows formatting changes,
 and highlights added and removed whiteboard strokes. Refresh fetches the latest
 live content without creating a snapshot.
+Use **Previous version** and **Next version** inside the comparison dialog to
+browse history without closing it. The comparison choice stays selected as you
+navigate; the oldest version compares with the current document since it has no
+preceding snapshot.
 The server captures the title, rich text (including formatting), legacy text, and
 whiteboard after 20 seconds without content changes, on disconnect, and when
 switching between the document and whiteboard. Unchanged automatic snapshots are
