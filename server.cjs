@@ -6,6 +6,9 @@ const { URL } = require('node:url')
 const WebSocket = require('ws')
 const { setupWSConnection, getPersistence, getYDoc, docs } = require('y-websocket/bin/utils')
 const Y = require('yjs')
+const { trusted, authorMessage, decoding } = require('./cluster.cjs')
+const syncProtocol = require('y-protocols/sync')
+const encoding = require('lib0/encoding')
 const { copyContent, createHistory, decodeVersion, publicVersion, versionContent } = require('./versionHistory.cjs')
 
 const host = process.env.HOST || 'localhost'
@@ -15,6 +18,13 @@ const dataPath = path.join(dataDirectory, 'merhav.json')
 const documentIdPattern = /^[a-zA-Z0-9_-]{1,100}$/
 const sessionCookie = 'merhav_session'
 const sessions = new Map()
+const clusterSecret = process.env.CLUSTER_SECRET
+const replicaEvents = new Set()
+function notifyReplicas(event) {
+  for (const connection of replicaEvents) {
+    if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify(event))
+  }
+}
 const deletingDocuments = new Set()
 const pendingPersistenceBinds = new Map()
 const roomHistories = new WeakMap()
@@ -49,6 +59,19 @@ if (configuredPersistence) {
 
 fs.mkdirSync(dataDirectory, { recursive: true })
 const data = loadData()
+const sessionsPath = path.join(dataDirectory, 'sessions.json')
+try {
+  for (const [token, session] of JSON.parse(fs.readFileSync(sessionsPath, 'utf8'))) {
+    if (session.expiresAt > Date.now()) sessions.set(token, session)
+  }
+} catch (error) { if (error.code !== 'ENOENT') throw error }
+function persistSessions() {
+  for (const [token, session] of sessions) {
+    if (session.expiresAt <= Date.now()) sessions.delete(token)
+  }
+  fs.writeFileSync(`${sessionsPath}.tmp`, JSON.stringify([...sessions]), { mode: 0o600 })
+  fs.renameSync(`${sessionsPath}.tmp`, sessionsPath)
+}
 
 function loadData() {
   let contents
@@ -71,6 +94,7 @@ function persistData() {
   const temporaryPath = `${dataPath}.tmp`
   fs.writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 })
   fs.renameSync(temporaryPath, dataPath)
+  notifyReplicas({ type: 'refresh' })
 }
 
 function sendJson(response, status, value, headers = {}) {
@@ -108,7 +132,8 @@ function getSessionToken(request) {
 function currentUser(request) {
   const token = getSessionToken(request)
   const tokenHash = token && hash(token)
-  const userId = tokenHash && sessions.get(tokenHash)
+  const session = tokenHash && sessions.get(tokenHash)
+  const userId = session && session.expiresAt > Date.now() ? session.userId : null
   return data.users.find(user => user.id === userId) || null
 }
 
@@ -118,13 +143,15 @@ function hash(value) {
 
 function createSession(user, response) {
   const token = crypto.randomBytes(32).toString('base64url')
-  sessions.set(hash(token), user.id)
+  sessions.set(hash(token), { userId: user.id, expiresAt: Date.now() + 2592000_000 })
+  persistSessions()
   response.setHeader('Set-Cookie', `${sessionCookie}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`)
 }
 
 function clearSession(request, response) {
   const token = getSessionToken(request)
   if (token) sessions.delete(hash(token))
+  persistSessions()
   response.setHeader('Set-Cookie', `${sessionCookie}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`)
 }
 
@@ -162,6 +189,7 @@ function hasAccess(document, user) {
 }
 
 function disconnectUser(userId, documentId) {
+  notifyReplicas({ type: 'disconnect', userId, documentId })
   const rooms = documentId ? [docs.get(documentId)].filter(Boolean) : docs.values()
   for (const room of rooms) {
     for (const connection of room.conns.keys()) {
@@ -409,6 +437,7 @@ async function handleApi(request, response, url) {
       deletingDocuments.add(id)
       document.deleting = true
       persistData()
+      notifyReplicas({ type: 'delete', id })
       await pendingPersistenceBinds.get(id)
       const room = docs.get(id)
       if (room) {
@@ -431,6 +460,23 @@ async function handleApi(request, response, url) {
 }
 
 const server = http.createServer((request, response) => {
+  if (request.url?.startsWith('/internal/')) {
+    if (!trusted(request, clusterSecret)) return sendJson(response, 403, { error: 'Forbidden' })
+    const capture = new URL(request.url, 'http://localhost').pathname.match(/^\/internal\/capture\/([a-zA-Z0-9_-]{1,100})$/)
+    if (request.method === 'POST' && capture && findDocument(capture[1]) && !findDocument(capture[1]).deleting) {
+      return historyRoom(capture[1]).then(({ history }) => {
+        if (!findDocument(capture[1]) || findDocument(capture[1]).deleting) return sendJson(response, 404, { error: 'Document not found.' })
+        history.capture()
+        sendJson(response, 200, { ok: true })
+      }).catch(() => sendJson(response, 503, { error: 'Document unavailable.' }))
+    }
+    const route = new URL(request.url, 'http://localhost').pathname.match(/^\/internal\/access\/([a-zA-Z0-9_-]{1,100})$/)
+    const user = currentUser(request)
+    if (request.method === 'GET' && route && user && hasAccess(findDocument(route[1]), user)) {
+      return sendJson(response, 200, { userId: user.id })
+    }
+    return sendJson(response, 403, { error: 'Forbidden' })
+  }
   if (!request.url?.startsWith('/api/')) {
     response.writeHead(200, { 'Content-Type': 'text/plain' })
     return response.end('okay')
@@ -461,6 +507,48 @@ websocketServer.on('connection', async (connection, request, documentId, userId)
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`)
+  if (url.pathname.startsWith('/internal/')) {
+    if (!trusted(request, clusterSecret)) return socket.destroy()
+    if (url.pathname === '/internal/events') {
+      return websocketServer.handleUpgrade(request, socket, head, connection => {
+        replicaEvents.add(connection)
+        connection.on('close', () => replicaEvents.delete(connection))
+        // Ping detects dead replicas even when no metadata changes occur.
+        let alive = true
+        connection.on('pong', () => { alive = true })
+        const heartbeat = setInterval(() => {
+          if (!alive) return connection.terminate()
+          alive = false
+          connection.ping()
+        }, 10_000)
+        connection.on('close', () => clearInterval(heartbeat))
+      })
+    }
+    const route = url.pathname.match(/^\/internal\/yjs\/([a-zA-Z0-9_-]{1,100})$/)
+    if (!route || !findDocument(route[1]) || findDocument(route[1]).deleting) return socket.destroy()
+    const id = route[1]
+    return historyRoom(id).then(({ room, history }) => {
+      if (!findDocument(id) || findDocument(id).deleting) return socket.destroy()
+      websocketServer.handleUpgrade(request, socket, head, connection => {
+        // Trusted replicas wrap ordinary updates with the originating account ID.
+        connection.on('message', message => {
+          try {
+            const decoder = decoding.createDecoder(new Uint8Array(message))
+            if (decoding.readVarUint(decoder) !== authorMessage) return
+            const userId = decoding.readVarString(decoder)
+            if (userId && !hasAccess(findDocument(id), data.users.find(user => user.id === userId))) {
+              return connection.close(4001, 'Access changed')
+            }
+            const payload = decoding.createDecoder(decoding.readVarUint8Array(decoder))
+            if (decoding.readVarUint(payload) !== 0) throw new Error('Invalid replica update')
+            syncProtocol.readSyncMessage(payload, encoding.createEncoder(), room, { merhavUserId: userId || null })
+          } catch (error) { console.error(error); connection.close(1003, 'Invalid replica update') }
+        })
+        setupWSConnection(connection, request, { docName: id })
+        connection.on('close', () => { if (!findDocument(id)?.deleting) history.capture() })
+      })
+    }).catch(error => { console.error(error); socket.destroy() })
+  }
   if (!url.pathname.startsWith('/yjs/')) return socket.destroy()
   let documentId
   try { documentId = decodeURIComponent(url.pathname.slice('/yjs/'.length)) } catch { return socket.destroy() }

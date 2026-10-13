@@ -84,3 +84,94 @@ npm run preview  # Serve the production build locally
 1. **Harden account management.** Add rate limiting, password reset, account recovery, and a database with transactional metadata updates.
 2. **Prepare production hosting and backups.** Deploy a reachable WebSocket server, configure a reverse proxy for WebSocket traffic under `/yjs`, provide persistent storage for `.data/`, and add HTTPS, backups, and monitoring.
 3. **Add automated coverage.** Test access control, document sharing and deletion, concurrent Yjs edits, language and direction switching, UI behavior, and recovery after a server restart.
+
+## Run multiple collaboration servers locally
+
+Start one storage coordinator, two collaboration replicas, and two Vite frontends:
+
+```bash
+CLUSTER_SECRET=local-development-secret npm run dev:scale
+```
+
+On Windows, set `CLUSTER_SECRET` in your shell before running `npm run dev:scale`.
+The secret must match on the coordinator and every replica. The existing
+`npm run dev:all` single-server setup continues to work without a secret.
+
+| Process | Port | Responsibility |
+| --- | --- | --- |
+| Coordinator (`server.cjs`) | 1234 | Accounts, sessions, permissions, history, durable document storage, replication |
+| Replica A (`replica.cjs`) | 1235 | Local Yjs rooms and WebSocket clients |
+| Replica B (`replica.cjs`) | 1236 | Local Yjs rooms and WebSocket clients |
+| Vite A | 5173 | Browser requests proxied to replica A |
+| Vite B | 5174 | Browser requests proxied to replica B |
+
+Each replica keeps its own live Yjs document and broadcasts edits to its local
+clients. One authenticated upstream WebSocket per active room synchronizes CRDT
+updates and awareness with the coordinator, which distributes them to other
+replicas. Incoming updates retain the originating account ID for automatic
+version attribution. Browser BroadcastChannel sharing is disabled on replication
+connections; cross-instance synchronization happens over the network.
+
+Only the coordinator opens `.data/` and its LevelDB database. Replicas forward
+HTTP API requests and cookies to it, and check current document access before
+accepting a browser WebSocket. Accounts, ownership, sharing, areas, snapshots,
+restore, branching, and deletion continue to use the existing API. A separate
+control connection carries logout, permission-change, and deletion notifications;
+replicas also periodically recheck access. Internal coordinator endpoints require
+`CLUSTER_SECRET` and are not forwarded by replicas.
+
+Sessions are persisted as hashed tokens with a 30-day expiry in
+`.data/sessions.json`, so existing cookies work across instances and coordinator
+restarts. Presence and cursors remain ephemeral. When the last local client leaves,
+its replica releases the upstream room and the coordinator captures pending history.
+
+To check the setup manually:
+
+1. Open `http://localhost:5173` in one browser profile and
+   `http://localhost:5174` in another profile or private window. Cookies are shared
+   across ports in the same profile, so use separate profiles for separate accounts.
+2. Create an account in each, create a document in the first, and share it with
+   the second account. Open the document on port 5174, retaining the document ID
+   from the shared link while changing the link's port.
+3. Edit simultaneously, apply formatting, change the title, draw on the board,
+   and move cursors. Both views should converge and show each other's presence.
+4. Disconnect and reconnect a browser, or restart a replica. Pending browser
+   CRDT edits merge when it reconnects. Save a version and restore it from the
+   other frontend to check that history changes also synchronize.
+5. Leave a shared document or log out through one frontend; affected sockets on
+   the other replica should close. Deleting a document closes all its connections.
+
+For individual processes or restart testing, use separate terminals:
+
+```bash
+CLUSTER_SECRET=local-development-secret npm run server
+CLUSTER_SECRET=local-development-secret npm run server:replica:a
+CLUSTER_SECRET=local-development-secret npm run server:replica:b
+npm run dev:replica:a
+npm run dev:replica:b
+```
+
+For additional replicas, set `HOST`, `PORT`, `COORDINATOR_URL`, and
+`CLUSTER_SECRET` and run `node replica.cjs`. Point Vite at that replica using
+`VITE_BACKEND_URL=http://127.0.0.1:<port> npm run dev`. Routing API and WebSocket
+traffic to different replicas also works; sticky sessions are not required.
+
+If the coordinator connection drops, replicas close clients, discard cached
+rooms, and reconnect. Browsers reconnect automatically, authenticate again, and
+load persisted state before merging their local Yjs changes. API calls return
+503 while the coordinator is unavailable. As in the original server, a live
+synchronized update is not a disk-flush acknowledgment; unflushed updates after
+an abrupt failure can be recovered from surviving browser documents on reconnect.
+
+This topology scales client connections and room broadcasting. The coordinator
+remains a single storage and authorization dependency and handles every document
+update, so this implementation does not provide highly available storage or
+unlimited write throughput. Keep the coordinator's internal endpoints on a
+trusted network, use a private deployment secret, and use TLS when crossing hosts.
+
+Run `npm test` for automated coverage. The scaling test launches a coordinator
+and two replicas on temporary ports with an isolated persistence directory and
+verifies concurrent edits, rich text, titles, whiteboard updates, cursor presence,
+disconnection cleanup, offline edits, version restore and attribution, shared
+sessions, worker and coordinator restarts, unauthorized connections, remote
+revocation/logout, permanent deletion, and empty state when a deleted ID is reclaimed.

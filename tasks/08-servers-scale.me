@@ -1,0 +1,19 @@
+### Horizontal scaling
+
+> Implement horizontal scaling for the existing Yjs collaboration server.
+
+The application should support running multiple server instances simultaneously.
+
+Users connected to different server instances must be able to edit the same document collaboratively in real time, with changes synchronized across instances.
+
+#### Requirements:
+- Support at least two server instances running locally.
+- Preserve existing editor functionality.
+- Keep document updates synchronized across instances.
+- Ensure user awareness (presence and cursors) works across instances.
+- Preserve existing authentication, permissions, and document persistence behavior.
+- Handle client disconnections, reconnections, and server restarts.
+- Provide instructions for running and testing the multi-server setup locally.
+- Add automated tests covering collaboration between instances.
+
+Implement the feature and verify that it works.
