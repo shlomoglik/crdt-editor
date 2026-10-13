@@ -16,7 +16,7 @@ A browser-based collaborative text editor and whiteboard. Multiple users can edi
 
 ## Localization
 
-The app supports English (`en`) and Hebrew (`he`). `LanguageProvider` exposes the current language, translation config, direction, and language setter through React context. The language selection is stored in browser `localStorage`. The selected language controls the interface strings and document direction (`ltr` or `rtl`). Translations live in `src/i18n.tsx`; keep user-facing Hebrew text in that config rather than in components or other source files.
+The app supports English (`en`), Hebrew (`he`), French (`fr`), and German (`de`), selectable on both the sign-in screen and in the workspace. Hebrew uses right-to-left layout; the other languages use left-to-right layout. `LanguageProvider` exposes the current language, translation config, direction, and language setter through React context. The language selection is stored in browser `localStorage`. The selected language controls the interface strings and document direction (`ltr` or `rtl`). Translations live in `src/i18n.tsx`; keep all translated interface text in that config rather than in components or other source files.
 
 ## How collaboration works
 

@@ -5,7 +5,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { ArrowDownToLine, Check, CircleHelp, FileText, GripVertical, History, MousePointer2, Pencil, Plus, Search, Share2, Sparkles, Trash2, X } from 'lucide-react'
 import { VersionHistory } from './VersionHistory'
 import { api, ApiOriginMismatchError, ApiServerUnavailableError, type Account, type Area, type AreaInvitation } from './api'
-import { LanguageProvider, useLanguage, type Language } from './i18n'
+import { LanguageProvider, useLanguage, supportedLanguages, languageLabelKeys, isLanguage } from './i18n'
 import { isDocumentId, readDocuments, readLegacyDocuments, removeLegacyDocument, writeDocuments, type DocumentRecord, type LegacyDocumentRecord } from './documentStore'
 import './style.css'
 
@@ -573,7 +573,10 @@ function Workspace() {
     link.click()
     URL.revokeObjectURL(link.href)
   }
-  const chooseLanguage = (event: React.ChangeEvent<HTMLSelectElement>) => setLanguage(event.target.value as Language)
+  const chooseLanguage = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const next = event.target.value
+    if (isLanguage(next)) setLanguage(next)
+  }
   const chars = bodyText.length
   const onTextChange = React.useCallback((nextText: string) => setBodyText(nextText), [])
 
@@ -588,7 +591,7 @@ function Workspace() {
       {authError && <p className="auth-error" role="alert">{authError}</p>}
       <button className="auth-submit" type="submit" disabled={authBusy}>{authBusy ? t.connecting : authMode === 'register' ? t.signUp : t.signIn}</button>
       <button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === 'register' ? 'login' : 'register'); setAuthError('') }}>{authMode === 'register' ? t.switchToSignIn : t.switchToSignUp}</button>
-      <label className="language-picker auth-language"><span>{t.selectLanguage}</span><select value={language} onChange={chooseLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
+      <label className="language-picker auth-language"><span>{t.selectLanguage}</span><select value={language} onChange={chooseLanguage}>{supportedLanguages.map(code => <option key={code} value={code}>{t[languageLabelKeys[code]]}</option>)}</select></label>
     </form>
   </main>
 
@@ -597,7 +600,7 @@ function Workspace() {
       <a className="brand" href="#" aria-label={t.brand}><span className="brand-mark"><Sparkles size={18} /></span><span>{t.brand}</span></a>
       <div className="breadcrumb"><span>{areas.find(area => area.id === selectedAreaId)?.name ?? (documentFilter === 'all' ? t.allDocuments : documentFilter === 'owner' ? t.myDocuments : t.sharedWithMe)}</span><span className="slash">/</span>{editingTitle ? <input autoFocus disabled={!synced} value={title} onChange={event => changeTitle(event.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={event => event.key === 'Enter' && setEditingTitle(false)} /> : <button className="title-button" disabled={!synced} onClick={() => setEditingTitle(true)}>{docId && !documentReady ? t.editorLoading : title}{documentReady && <span className="edit-dot" />}</button>}</div>
       <div className="top-actions">
-        <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}><option value="en">{t.english}</option><option value="he">{t.hebrew}</option></select></label>
+        <label className="language-picker"><span className="sr-only">{t.selectLanguage}</span><select value={language} onChange={chooseLanguage} aria-label={t.selectLanguage}>{supportedLanguages.map(code => <option key={code} value={code}>{t[languageLabelKeys[code]]}</option>)}</select></label>
         <span className={`save-status ${connected ? 'online' : ''}`}><i />{connected ? synced ? t.saved : t.connecting : t.disconnected}</span>
         <button className="icon-btn" disabled={!docId || !synced} onClick={() => setHistoryOpen(value => !value)} title={t.versionHistory} aria-label={t.versionHistory} aria-expanded={historyOpen}><History size={17} /></button>
         <button className="icon-btn" onClick={exportFile} title={t.download}><ArrowDownToLine size={17} /></button>
